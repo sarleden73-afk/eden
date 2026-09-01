@@ -9,20 +9,22 @@ import { getDepenses, creerDepense, validerDepense } from "../services/db";
 import { fcfa, dateCourte, aujourdhui } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import {
-  EXPENSE_LABELS, PAYMENT_LABELS, POLE_SHORT,
-  type Expense, type Pole, type PeriodKey, type ExpenseCategory,
+  EXPENSE_LABELS, PAYMENT_LABELS,
+  type Expense, type PeriodKey, type ExpenseCategory,
 } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { useEtablissement } from "../contexts/EtablissementContext";
 
 /** §5.7 Gestion des dépenses. */
 export default function Depenses() {
   const { peut } = useAuth();
+  const { selection, libelle, pourEcriture } = useEtablissement();
   const peutValider = peut("admin", "responsable");
 
   const [periode, setPeriode] = useState<PeriodKey>("mois");
   const [debut, setDebut] = useState(aujourdhui());
   const [fin, setFin] = useState(aujourdhui());
-  const [pole, setPole] = useState<Pole | "">("");
+
   const [depenses, setDepenses] = useState<Expense[]>([]);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -31,14 +33,14 @@ export default function Depenses() {
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setDepenses(await getDepenses(periode, { debut, fin, pole }));
+      setDepenses(await getDepenses(periode, { debut, fin, etablissement: selection }));
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
     } finally {
       setChargement(false);
     }
-  }, [periode, debut, fin, pole]);
+  }, [periode, debut, fin, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -58,9 +60,9 @@ export default function Depenses() {
   const exporter = () =>
     exporterCSV(
       "depenses-eden",
-      ["Date", "Pôle", "Catégorie", "Motif", "Montant", "Paiement", "Effectuée par", "Validée par", "Justificatif"],
+      ["Date", "Établissement", "Catégorie", "Motif", "Montant", "Paiement", "Effectuée par", "Validée par", "Justificatif"],
       depenses.map((d) => [
-        dateCourte(d.dateDepense), POLE_SHORT[d.pole], EXPENSE_LABELS[d.categorie],
+        dateCourte(d.dateDepense), d.etablissementNom ?? "—", EXPENSE_LABELS[d.categorie],
         d.motif, d.montant, PAYMENT_LABELS[d.paymentMethod],
         d.effectueParNom ?? "", d.valideParNom ?? "Non validée", d.justificatif ?? "",
       ])
@@ -68,20 +70,22 @@ export default function Depenses() {
 
   return (
     <Layout>
-      <PageHeader titre="Dépenses" sousTitre="Saisie, justification et validation des sorties d'argent">
+      <PageHeader titre="Dépenses" sousTitre={`${libelle} — saisie, justification et validation`}>
         <SelecteurPeriode
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Liste value={pole} onChange={(e) => setPole(e.target.value as Pole | "")} className="w-auto py-1.5">
-          <option value="">Tous les pôles</option>
-          <option value="MULTI_SERVICES">Multi-Services</option>
-          <option value="FOOD">Food</option>
-        </Liste>
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!depenses.length}>
           Excel
         </Bouton>
-        <Bouton icone={Plus} onClick={() => setNouvelle(true)}>Nouvelle dépense</Bouton>
+        <Bouton
+          icone={Plus}
+          onClick={() => setNouvelle(true)}
+          disabled={pourEcriture === null}
+          title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}
+        >
+          Nouvelle dépense
+        </Bouton>
       </PageHeader>
 
       <Erreur message={erreur} />
@@ -104,7 +108,7 @@ export default function Depenses() {
             description="Électricité, loyer, transport, matières premières… chaque sortie d'argent doit être enregistrée pour que le résultat soit fiable."
           />
         ) : (
-          <Tableau entetes={["Date", "Catégorie", "Motif", "Pôle", " Montant", "Par", "Validation", ""]}>
+          <Tableau entetes={["Date", "Catégorie", "Motif", "Établissement", " Montant", "Par", "Validation", ""]}>
             {depenses.map((d) => (
               <tr key={d.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(d.dateDepense)}</td>
@@ -112,7 +116,7 @@ export default function Depenses() {
                   <Badge ton="info">{EXPENSE_LABELS[d.categorie]}</Badge>
                 </td>
                 <td className="px-4 py-3 text-gray-900 max-w-xs truncate" title={d.motif}>{d.motif}</td>
-                <td className="px-4 py-3 text-gray-600">{POLE_SHORT[d.pole]}</td>
+                <td className="px-4 py-3 text-gray-600">{d.etablissementNom ?? "—"}</td>
                 <td className="px-4 py-3 text-right tabulaire font-medium text-red-700 whitespace-nowrap">
                   {fcfa(d.montant)}
                 </td>
@@ -159,8 +163,7 @@ export default function Depenses() {
 function ModaleDepense({
   ouverte, onFermer, onSucces,
 }: { ouverte: boolean; onFermer: () => void; onSucces: () => void }) {
-  const { profil } = useAuth();
-  const [pole, setPole] = useState<Pole>(profil?.pole ?? "MULTI_SERVICES");
+  const { pourEcriture, libelle } = useEtablissement();
   const [categorie, setCategorie] = useState<ExpenseCategory>("achat_marchandises");
   const [montant, setMontant] = useState("");
   const [motif, setMotif] = useState("");
@@ -172,17 +175,16 @@ function ModaleDepense({
 
   useEffect(() => {
     if (!ouverte) return;
-    setPole(profil?.pole ?? "MULTI_SERVICES");
     setCategorie("achat_marchandises"); setMontant(""); setMotif("");
     setDate(aujourdhui()); setPaiement("especes"); setJustificatif(""); setErreur(null);
-  }, [ouverte, profil]);
+  }, [ouverte]);
 
   const soumettre = async () => {
     setEnvoi(true);
     setErreur(null);
     try {
       await creerDepense({
-        pole, categorie, montant: Number(montant) || 0, motif: motif.trim(),
+        establishmentId: pourEcriture as number, categorie, montant: Number(montant) || 0, motif: motif.trim(),
         dateDepense: date, paymentMethod: paiement,
         justificatif: justificatif.trim() || undefined,
       });
@@ -199,11 +201,8 @@ function ModaleDepense({
       <Erreur message={erreur} />
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Champ label="Pôle concerné">
-          <Liste value={pole} onChange={(e) => setPole(e.target.value as Pole)}>
-            <option value="MULTI_SERVICES">EDEN MULTI-SERVICES</option>
-            <option value="FOOD">EDEN FOOD</option>
-          </Liste>
+        <Champ label="Établissement" aide="Défini par le sélecteur, en haut du menu.">
+          <Saisie value={libelle} disabled />
         </Champ>
 
         <Champ label="Catégorie">

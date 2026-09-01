@@ -1,6 +1,7 @@
 import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
+import { EtablissementProvider } from "./contexts/EtablissementContext";
 import type { UserRole } from "./types";
 
 import Login from "./pages/Login";
@@ -17,6 +18,7 @@ import Depenses from "./pages/Depenses";
 import Rapports from "./pages/Rapports";
 import Comptabilite from "./pages/Comptabilite";
 import Personnel from "./pages/Personnel";
+import Etablissements from "./pages/Etablissements";
 import Journal from "./pages/Journal";
 import Parametres from "./pages/Parametres";
 
@@ -34,9 +36,8 @@ function Ecran() {
 
 /**
  * Garde de route. Le filtrage par rôle ici n'est qu'un confort d'interface :
- * la règle qui fait foi est appliquée par l'API sur chaque appel (src/api.ts).
- * Un utilisateur qui forcerait une URL verrait un écran vide et des erreurs 403,
- * pas des données auxquelles il n'a pas droit.
+ * la règle qui fait foi est appliquée par l'API sur chaque appel (src/api.ts),
+ * y compris le cloisonnement par établissement.
  */
 function Protege({ roles, children }: { roles: UserRole[]; children: React.ReactNode }) {
   const { session, profil, loading } = useAuth();
@@ -48,7 +49,6 @@ function Protege({ roles, children }: { roles: UserRole[]; children: React.React
   return <>{children}</>;
 }
 
-/** Redirige un utilisateur déjà connecté loin de l'écran de connexion. */
 function ConnexionOuAccueil() {
   const { session, profil, loading } = useAuth();
   if (loading) return <Ecran />;
@@ -60,30 +60,35 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Routes>
-          <Route path="/connexion" element={<ConnexionOuAccueil />} />
+        {/* Le contexte d'établissement dépend du profil : il est monté à
+            l'intérieur de l'authentification. */}
+        <EtablissementProvider>
+          <Routes>
+            <Route path="/connexion" element={<ConnexionOuAccueil />} />
 
-          <Route path="/tableau-de-bord" element={<Protege roles={TOUS}><Dashboard /></Protege>} />
-          <Route path="/vente"          element={<Protege roles={TOUS}><Vente /></Protege>} />
-          <Route path="/caisse"         element={<Protege roles={TOUS}><Caisse /></Protege>} />
-          <Route path="/ventes"         element={<Protege roles={TOUS}><Ventes /></Protege>} />
-          <Route path="/commandes"      element={<Protege roles={TOUS}><Commandes /></Protege>} />
-          <Route path="/clients"        element={<Protege roles={TOUS}><Clients /></Protege>} />
-          <Route path="/catalogue"      element={<Protege roles={TOUS}><Catalogue /></Protege>} />
-          <Route path="/stocks"         element={<Protege roles={TOUS}><Stocks /></Protege>} />
+            <Route path="/tableau-de-bord" element={<Protege roles={TOUS}><Dashboard /></Protege>} />
+            <Route path="/vente"          element={<Protege roles={TOUS}><Vente /></Protege>} />
+            <Route path="/caisse"         element={<Protege roles={TOUS}><Caisse /></Protege>} />
+            <Route path="/ventes"         element={<Protege roles={TOUS}><Ventes /></Protege>} />
+            <Route path="/commandes"      element={<Protege roles={TOUS}><Commandes /></Protege>} />
+            <Route path="/clients"        element={<Protege roles={TOUS}><Clients /></Protege>} />
+            <Route path="/catalogue"      element={<Protege roles={TOUS}><Catalogue /></Protege>} />
+            <Route path="/stocks"         element={<Protege roles={TOUS}><Stocks /></Protege>} />
 
-          <Route path="/achats"         element={<Protege roles={VALIDENT}><Achats /></Protege>} />
-          <Route path="/depenses"       element={<Protege roles={TOUS}><Depenses /></Protege>} />
-          <Route path="/rapports"       element={<Protege roles={VALIDENT}><Rapports /></Protege>} />
-          <Route path="/journal"        element={<Protege roles={VALIDENT}><Journal /></Protege>} />
+            <Route path="/achats"         element={<Protege roles={VALIDENT}><Achats /></Protege>} />
+            <Route path="/depenses"       element={<Protege roles={TOUS}><Depenses /></Protege>} />
+            <Route path="/rapports"       element={<Protege roles={VALIDENT}><Rapports /></Protege>} />
+            <Route path="/journal"        element={<Protege roles={VALIDENT}><Journal /></Protege>} />
 
-          <Route path="/comptabilite"   element={<Protege roles={ADMIN}><Comptabilite /></Protege>} />
-          <Route path="/personnel"      element={<Protege roles={ADMIN}><Personnel /></Protege>} />
-          <Route path="/parametres"     element={<Protege roles={ADMIN}><Parametres /></Protege>} />
+            <Route path="/comptabilite"   element={<Protege roles={ADMIN}><Comptabilite /></Protege>} />
+            <Route path="/personnel"      element={<Protege roles={ADMIN}><Personnel /></Protege>} />
+            <Route path="/etablissements" element={<Protege roles={ADMIN}><Etablissements /></Protege>} />
+            <Route path="/parametres"     element={<Protege roles={ADMIN}><Parametres /></Protege>} />
 
-          <Route path="/" element={<Navigate to="/tableau-de-bord" replace />} />
-          <Route path="*" element={<Navigate to="/tableau-de-bord" replace />} />
-        </Routes>
+            <Route path="/" element={<Navigate to="/tableau-de-bord" replace />} />
+            <Route path="*" element={<Navigate to="/tableau-de-bord" replace />} />
+          </Routes>
+        </EtablissementProvider>
       </AuthProvider>
     </BrowserRouter>
   );

@@ -11,7 +11,8 @@ import {
 import { fcfa, dateCourte } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
-import { ROLE_LABELS, POLE_LABELS, type Profile, type UserRole, type Pole } from "../types";
+import { ROLE_LABELS, type Profile, type UserRole, type Establishment } from "../types";
+import { getEtablissements } from "../services/db";
 import { useAuth } from "../contexts/AuthContext";
 
 const TONS_ROLE: Record<UserRole, "info" | "succes" | "neutre" | "alerte"> = {
@@ -56,12 +57,14 @@ export default function Personnel() {
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [edite, setEdite] = useState<Profile | "nouveau" | null>(null);
+  const [etablissements, setEtablissements] = useState<Establishment[]>([]);
   const [motDePasseA, setMotDePasseA] = useState<Profile | null>(null);
 
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
       setUtilisateurs(await getUtilisateurs());
+      setEtablissements(await getEtablissements().catch(() => []));
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
@@ -75,10 +78,10 @@ export default function Personnel() {
   const exporter = () =>
     exporterCSV(
       "personnel-eden",
-      ["Nom complet", "E-mail", "Rôle", "Pôle", "Poste", "Téléphone", "Salaire", "Date d'entrée", "État"],
+      ["Nom complet", "E-mail", "Rôle", "Établissement", "Poste", "Téléphone", "Salaire", "Date d'entrée", "État"],
       utilisateurs.map((u) => [
         u.fullName, u.email, ROLE_LABELS[u.role],
-        u.pole ? POLE_LABELS[u.pole] : "Les deux pôles",
+        u.etablissementNom ?? "Tous les établissements",
         u.poste ?? "", u.telephone ?? "", u.salaire ?? "",
         dateCourte(u.dateEntree), u.actif ? "Actif" : "Désactivé",
       ])
@@ -101,7 +104,7 @@ export default function Personnel() {
         ) : utilisateurs.length === 0 ? (
           <Vide icone={UserCog} titre="Aucun compte" />
         ) : (
-          <Tableau entetes={["Employé", "Rôle", "Pôle", "Poste", " Salaire", "Entrée", "État", ""]}>
+          <Tableau entetes={["Employé", "Rôle", "Établissement", "Poste", " Salaire", "Entrée", "État", ""]}>
             {utilisateurs.map((u) => (
               <tr key={u.id} className={cn("hover:bg-gray-50", !u.actif && "opacity-50")}>
                 <td className="px-4 py-3">
@@ -113,7 +116,7 @@ export default function Personnel() {
                 </td>
                 <td className="px-4 py-3"><Badge ton={TONS_ROLE[u.role]}>{ROLE_LABELS[u.role]}</Badge></td>
                 <td className="px-4 py-3 text-gray-600 text-sm">
-                  {u.pole ? POLE_LABELS[u.pole] : <span className="text-gray-400">Les deux</span>}
+                  {u.etablissementNom ?? <span className="text-gray-400">Tous</span>}
                 </td>
                 <td className="px-4 py-3 text-gray-600">{u.poste ?? "—"}</td>
                 <td className="px-4 py-3 text-right tabulaire text-gray-600 whitespace-nowrap">
@@ -173,7 +176,7 @@ export default function Personnel() {
       </Card>
 
       <ModaleUtilisateur
-        cible={edite} onFermer={() => setEdite(null)}
+        cible={edite} etablissements={etablissements} onFermer={() => setEdite(null)}
         onSucces={() => { setEdite(null); void recharger(); }}
       />
       <ModaleMotDePasse utilisateur={motDePasseA} onFermer={() => setMotDePasseA(null)} />
@@ -184,14 +187,19 @@ export default function Personnel() {
 // ---------------------------------------------------------------------------
 
 function ModaleUtilisateur({
-  cible, onFermer, onSucces,
-}: { cible: Profile | "nouveau" | null; onFermer: () => void; onSucces: () => void }) {
+  cible, etablissements, onFermer, onSucces,
+}: {
+  cible: Profile | "nouveau" | null;
+  etablissements: Establishment[];
+  onFermer: () => void;
+  onSucces: () => void;
+}) {
   const nouveau = cible === "nouveau";
   const utilisateur = nouveau ? null : cible;
 
   const [form, setForm] = useState({
     fullName: "", email: "", password: "", role: "caissier" as UserRole,
-    pole: "" as Pole | "", poste: "", telephone: "", salaire: "", dateEntree: "", actif: true,
+    establishmentId: "", poste: "", telephone: "", salaire: "", dateEntree: "", actif: true,
   });
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
@@ -204,7 +212,7 @@ function ModaleUtilisateur({
       email: utilisateur?.email ?? "",
       password: "",
       role: utilisateur?.role ?? "caissier",
-      pole: utilisateur?.pole ?? "",
+      establishmentId: utilisateur?.establishmentId ? String(utilisateur.establishmentId) : "",
       poste: utilisateur?.poste ?? "",
       telephone: utilisateur?.telephone ?? "",
       salaire: utilisateur?.salaire ? String(utilisateur.salaire) : "",
@@ -222,7 +230,7 @@ function ModaleUtilisateur({
       const commun = {
         fullName: form.fullName.trim(),
         role: form.role,
-        pole: (form.pole || null) as Pole | null,
+        establishmentId: form.establishmentId ? Number(form.establishmentId) : null,
         poste: form.poste.trim() || undefined,
         telephone: form.telephone.trim() || undefined,
         salaire: form.salaire ? Number(form.salaire) : undefined,
@@ -288,11 +296,26 @@ function ModaleUtilisateur({
           </Liste>
         </Champ>
 
-        <Champ label="Pôle de rattachement" aide="« Les deux » pour un poste transversal.">
-          <Liste value={form.pole} onChange={(e) => setForm({ ...form, pole: e.target.value as Pole | "" })}>
-            <option value="">Les deux pôles</option>
-            <option value="MULTI_SERVICES">EDEN MULTI-SERVICES</option>
-            <option value="FOOD">EDEN FOOD</option>
+        <Champ
+          label="Établissement de rattachement"
+          aide={
+            form.role === "caissier" || form.role === "technicien"
+              ? "Obligatoire : ce rôle ne peut pas accéder à plusieurs établissements."
+              : "« Tous » donne accès à chaque établissement et à la vue consolidée."
+          }
+        >
+          <Liste
+            value={form.establishmentId}
+            onChange={(e) => setForm({ ...form, establishmentId: e.target.value })}
+          >
+            {/* Le rattachement « tous » n'est proposé qu'aux rôles qui peuvent
+                réellement basculer d'un établissement à l'autre (§5.1). */}
+            {(form.role === "admin" || form.role === "responsable") && (
+              <option value="">Tous les établissements</option>
+            )}
+            {etablissements.filter((e) => e.actif).map((e) => (
+              <option key={e.id} value={e.id}>{e.nom}</option>
+            ))}
           </Liste>
         </Champ>
 

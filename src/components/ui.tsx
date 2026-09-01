@@ -1,5 +1,5 @@
 import React from "react";
-import { LucideIcon, X, Loader2, Inbox, AlertTriangle } from "lucide-react";
+import { LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { PeriodKey } from "../types";
 import { fcfa } from "../lib/format";
@@ -232,6 +232,35 @@ export function StatCard({
 export function Montant({ valeur, gras }: { valeur: number; gras?: boolean }) {
   return (
     <span className={cn("tabulaire text-amber-600", gras && "font-semibold")}>{fcfa(valeur)}</span>
+  );
+}
+
+/**
+ * Bandeau affiché en vue consolidée sur les écrans de saisie.
+ *
+ * On n'enregistre jamais une vente, une dépense ou une caisse « chez tous les
+ * établissements » : il faut d'abord en choisir un. Plutôt que de laisser un
+ * formulaire échouer au moment de valider, l'écran le dit d'emblée.
+ */
+export function BandeauChoisirEtablissement({ action }: { action: string }) {
+  return (
+    <div className="flex items-start gap-2.5 p-4 mb-5 bg-amber-50 border border-amber-200 rounded-lg">
+      <Layers className="h-5 w-5 text-amber-600 shrink-0 mt-px" />
+      <p className="text-sm text-amber-900">
+        Vous consultez le cumul des établissements. Pour {action}, choisissez d'abord un
+        établissement précis dans le sélecteur, en haut du menu.
+      </p>
+    </div>
+  );
+}
+
+/** Pastille de couleur d'un établissement, pour les tableaux consolidés. */
+export function PastilleEtablissement({ couleur, nom }: { couleur: string; nom: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: couleur }} aria-hidden />
+      <span className="truncate">{nom}</span>
+    </span>
   );
 }
 

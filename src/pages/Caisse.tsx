@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Wallet, LockOpen, Lock, ArrowDownCircle, ArrowUpCircle, Store, UtensilsCrossed,
+  Wallet, LockOpen, Lock, ArrowDownCircle, ArrowUpCircle,
   History, Scale,
 } from "lucide-react";
 import Layout from "../components/Layout";
@@ -15,15 +15,16 @@ import {
 import { fcfa, dateHeure, heure } from "../lib/format";
 import { cn } from "../lib/utils";
 import {
-  CASH_MOVEMENT_LABELS, PAYMENT_LABELS, POLE_LABELS,
-  type Pole, type CashSession,
+  CASH_MOVEMENT_LABELS, PAYMENT_LABELS,
+  type CashSession,
 } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { useEtablissement } from "../contexts/EtablissementContext";
 
 /** §5.3 Gestion de la caisse : ouverture, mouvements de la journée, fermeture. */
 export default function Caisse() {
-  const { profil, peut } = useAuth();
-  const [pole, setPole] = useState<Pole>(profil?.pole ?? "MULTI_SERVICES");
+  const { peut } = useAuth();
+  const { pourEcriture, libelle, selection } = useEtablissement();
   const [caisse, setCaisse] = useState<CaisseCourante>(null);
   const [historique, setHistorique] = useState<CashSession[]>([]);
   const [chargement, setChargement] = useState(true);
@@ -36,39 +37,23 @@ export default function Caisse() {
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      const courante = await getCaisseCourante(pole);
+      const courante = pourEcriture === null ? null : await getCaisseCourante(pourEcriture);
       setCaisse(courante);
       // L'historique n'est accessible qu'aux profils qui valident (§5.1).
-      if (peut("admin", "responsable")) setHistorique(await getSessionsCaisse(pole));
+      if (peut("admin", "responsable")) setHistorique(await getSessionsCaisse(selection));
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
     } finally {
       setChargement(false);
     }
-  }, [pole, peut]);
+  }, [pourEcriture, selection, peut]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
   return (
     <Layout>
-      <PageHeader titre="Caisse" sousTitre="Ouverture, mouvements et rapprochement de fin de journée">
-        <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5">
-          {(["MULTI_SERVICES", "FOOD"] as Pole[]).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPole(p)}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
-                pole === p ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-100"
-              )}
-            >
-              {p === "MULTI_SERVICES" ? <Store className="h-4 w-4" /> : <UtensilsCrossed className="h-4 w-4" />}
-              {p === "MULTI_SERVICES" ? "Multi-Services" : "Food"}
-            </button>
-          ))}
-        </div>
-      </PageHeader>
+      <PageHeader titre="Caisse" sousTitre={`${libelle} — ouverture, mouvements et rapprochement`} />
 
       <Erreur message={erreur} />
 
@@ -78,8 +63,8 @@ export default function Caisse() {
         <Card>
           <Vide
             icone={Wallet}
-            titre={`La caisse de ${POLE_LABELS[pole]} est fermée`}
-            description="Ouvrez la caisse en déclarant le fond de caisse initial. Tant qu'elle est fermée, aucune vente ne peut être enregistrée sur ce pôle."
+            titre={`La caisse de ${libelle} est fermée`}
+            description="Ouvrez la caisse en déclarant le fond de caisse initial. Tant qu'elle est fermée, aucune vente ne peut être enregistrée dans cet établissement."
           >
             <Bouton icone={LockOpen} onClick={() => setModaleOuverture(true)}>
               Ouvrir la caisse
@@ -94,7 +79,7 @@ export default function Caisse() {
               <div>
                 <div className="flex items-center gap-2">
                   <Badge ton="succes">Ouverte</Badge>
-                  <span className="text-sm text-gray-500">{POLE_LABELS[pole]}</span>
+                  <span className="text-sm text-gray-500">{libelle}</span>
                 </div>
                 <p className="mt-2 text-sm text-gray-600">
                   Ouverte le {dateHeure(caisse.openedAt)} par{" "}
@@ -196,7 +181,7 @@ export default function Caisse() {
       )}
 
       <ModaleOuverture
-        ouverte={modaleOuverture} pole={pole}
+        ouverte={modaleOuverture} etablissementId={pourEcriture} libelle={libelle}
         onFermer={() => setModaleOuverture(false)}
         onSucces={() => { setModaleOuverture(false); void recharger(); }}
       />
@@ -221,8 +206,8 @@ export default function Caisse() {
 // ---------------------------------------------------------------------------
 
 function ModaleOuverture({
-  ouverte, pole, onFermer, onSucces,
-}: { ouverte: boolean; pole: Pole; onFermer: () => void; onSucces: () => void }) {
+  ouverte, etablissementId, libelle, onFermer, onSucces,
+}: { ouverte: boolean; etablissementId: number | null; libelle: string; onFermer: () => void; onSucces: () => void }) {
   const [fonds, setFonds] = useState("");
   const [notes, setNotes] = useState("");
   const [erreur, setErreur] = useState<string | null>(null);
@@ -232,7 +217,7 @@ function ModaleOuverture({
     setEnvoi(true);
     setErreur(null);
     try {
-      await ouvrirCaisse({ pole, fondsInitial: Number(fonds) || 0, notes: notes.trim() || undefined });
+      await ouvrirCaisse({ establishmentId: etablissementId as number, fondsInitial: Number(fonds) || 0, notes: notes.trim() || undefined });
       setFonds(""); setNotes("");
       onSucces();
     } catch (e) {
@@ -243,7 +228,7 @@ function ModaleOuverture({
   };
 
   return (
-    <Modale ouverte={ouverte} titre={`Ouvrir la caisse — ${POLE_LABELS[pole]}`} onFermer={onFermer}>
+    <Modale ouverte={ouverte} titre={`Ouvrir la caisse — ${libelle}`} onFermer={onFermer}>
       <Erreur message={erreur} />
       <div className="space-y-4">
         <Champ

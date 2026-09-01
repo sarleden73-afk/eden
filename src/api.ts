@@ -3,28 +3,26 @@ import { supabase } from "./lib/supabase-server.js";
 import { requireAuth, AuthRequest } from "./middleware/auth.js";
 import { toCamelCase, toCamelCaseArray, toSnakeCase } from "./lib/caseConvert.js";
 import type {
-  Pole, UserRole, PaymentMethod, DashboardStats, ReportData, ExpenseCategory,
+  UserRole, PaymentMethod, DashboardStats, ReportData, ExpenseCategory,
+  LigneEtablissement,
 } from "./types.js";
 
 // ============================================================================
-// API EDEN MULTI-SERVICES
+// API EDEN — plateforme multi-établissements
 // ----------------------------------------------------------------------------
 // Toutes les routes sont montées sous /api et exigent une session Supabase
 // valide (requireAuth), puis un profil actif (loadProfile). Les autorisations
-// du §5.1 du cahier des charges sont appliquées ici, côté serveur : le frontend
-// masque les écrans interdits, mais c'est cette couche qui fait foi.
+// du §5.1 sont appliquées ici, côté serveur : le frontend masque les écrans
+// interdits, mais c'est cette couche qui fait foi.
+//
+// Cloisonnement par établissement
+// -------------------------------
+// Chaque écriture appartient à un établissement. Un profil rattaché à un
+// établissement (caissier, technicien) ne peut ni lire ni écrire ailleurs, et
+// ne peut pas demander la vue consolidée. Un profil sans rattachement
+// (propriétaire, responsable transversal) accède à tous les établissements et
+// choisit explicitement d'en voir un seul ou le cumul.
 // ============================================================================
-
-// --- Autorisations (§5.1) ---------------------------------------------------
-// admin        : accès à tout, gestion des utilisateurs, modification des prix,
-//                comptabilité, rapports.
-// responsable  : consultation des ventes et du stock, validation de certaines
-//                opérations (dépenses, annulations, fermeture de caisse), suivi
-//                des employés. Ne gère ni les comptes ni les prix.
-// caissier     : enregistrement des ventes, encaissement, consultation limitée
-//                du stock.
-// technicien   : enregistrement des prestations cyber/infographie, suivi des
-//                commandes clients.
 
 const TOUS: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
 const ENCAISSENT: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
@@ -35,7 +33,8 @@ interface Profil {
   id: string;
   fullName: string;
   role: UserRole;
-  pole: Pole | null;
+  /** null = accès à tous les établissements. */
+  establishmentId: number | null;
   actif: boolean;
 }
 
@@ -43,16 +42,10 @@ interface Req extends AuthRequest {
   profil?: Profil;
 }
 
-/**
- * Charge le profil applicatif après l'authentification Supabase. Un compte
- * authentifié mais sans profil, ou désactivé, est rejeté : c'est ce qui permet
- * de couper l'accès d'un employé qui quitte l'entreprise sans supprimer son
- * compte Auth (et donc sans perdre l'historique de ses ventes).
- */
 async function loadProfile(req: Req, res: Response, next: express.NextFunction) {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, role, pole, actif")
+    .select("id, full_name, role, establishment_id, actif")
     .eq("id", req.user!.uid)
     .maybeSingle();
 
@@ -62,39 +55,88 @@ async function loadProfile(req: Req, res: Response, next: express.NextFunction) 
       error: "Aucun profil n'est associé à ce compte. Contactez l'administrateur.",
     });
   }
-  if (!data.actif) {
-    return res.status(403).json({ error: "Ce compte a été désactivé." });
-  }
+  if (!data.actif) return res.status(403).json({ error: "Ce compte a été désactivé." });
 
   req.profil = {
     id: data.id,
     fullName: data.full_name,
     role: data.role as UserRole,
-    pole: data.pole as Pole | null,
+    establishmentId: data.establishment_id as number | null,
     actif: data.actif,
   };
   next();
 }
 
-/** Garde de rôle. À placer après loadProfile. */
 function requireRole(...roles: UserRole[]) {
   return (req: Req, res: Response, next: express.NextFunction) => {
     if (!roles.includes(req.profil!.role)) {
-      return res.status(403).json({
-        error: "Votre rôle ne vous autorise pas cette opération.",
-      });
+      return res.status(403).json({ error: "Votre rôle ne vous autorise pas cette opération." });
     }
     next();
   };
 }
 
-// --- Traçabilité (§5.10) ----------------------------------------------------
+// --- Portée par établissement ----------------------------------------------
+
+/** Le profil peut-il voir plusieurs établissements et le cumul ? */
+const estTransversal = (p: Profil) => p.establishmentId === null;
 
 /**
- * Écrit une entrée au journal. Volontairement sans `await` bloquant l'appelant
- * sur son échec : une panne d'écriture du journal ne doit pas annuler une vente
- * déjà enregistrée. L'erreur est loguée pour être visible en supervision.
+ * Résout l'établissement demandé en le confrontant à la portée du profil.
+ *
+ * Retourne `null` pour la vue consolidée, un identifiant sinon. Un profil
+ * rattaché est ramené de force à son établissement, quelle que soit la valeur
+ * envoyée : c'est ce qui empêche un caissier de lire les ventes du restaurant
+ * en modifiant simplement l'URL.
  */
+// Les deux helpers renvoient toujours les mêmes champs plutôt qu'une union
+// discriminée : le projet ne compile pas en mode `strict`, et sans
+// `strictNullChecks` TypeScript ne sait pas restreindre `{ok: true} | {ok: false}`.
+// Une forme unique évite ce piège et se lit aussi bien.
+
+interface Portee {
+  /** Établissement retenu ; null = vue consolidée. */
+  id: number | null;
+  /** Message à renvoyer au client, ou null si la demande est recevable. */
+  erreur: string | null;
+}
+
+function etablissementDemande(profil: Profil, valeur: unknown): Portee {
+  if (!estTransversal(profil)) return { id: profil.establishmentId, erreur: null };
+  if (valeur === undefined || valeur === "" || valeur === "tous") return { id: null, erreur: null };
+
+  const id = Number(valeur);
+  if (!Number.isInteger(id) || id <= 0) {
+    return { id: null, erreur: "Établissement invalide." };
+  }
+  return { id, erreur: null };
+}
+
+/** Variante pour les écritures : un établissement précis est obligatoire. */
+function etablissementEcriture(
+  profil: Profil,
+  valeur: unknown
+): { id: number; erreur: string | null } {
+  if (!estTransversal(profil)) return { id: profil.establishmentId as number, erreur: null };
+
+  const id = Number(valeur);
+  if (!Number.isInteger(id) || id <= 0) {
+    return { id: 0, erreur: "L'établissement doit être précisé pour cette opération." };
+  }
+  return { id, erreur: null };
+}
+
+/** Applique le filtre d'établissement à une requête, sauf en vue consolidée. */
+function filtrerEtablissement<T extends { eq: (c: string, v: unknown) => T }>(
+  requete: T,
+  id: number | null,
+  colonne = "establishment_id"
+): T {
+  return id === null ? requete : requete.eq(colonne, id);
+}
+
+// --- Traçabilité (§5.10) ----------------------------------------------------
+
 function journaliser(
   profil: Profil,
   action: string,
@@ -121,47 +163,57 @@ function journaliser(
 
 // --- Utilitaires ------------------------------------------------------------
 
-/** Enveloppe async pour que les rejets remontent au gestionnaire d'erreurs. */
 const route =
   (fn: (req: Req, res: Response) => Promise<unknown>) =>
   (req: Req, res: Response, next: express.NextFunction) => {
     Promise.resolve(fn(req, res)).catch(next);
   };
 
-/** Cache court des noms d'employés : évite un aller-retour par ligne affichée. */
-let profilsCache: { at: number; map: Map<string, string> } | null = null;
+/** Caches courts : évitent un aller-retour par ligne affichée. */
+let cacheProfils: { at: number; map: Map<string, string> } | null = null;
 async function nomsEmployes(): Promise<Map<string, string>> {
-  if (profilsCache && Date.now() - profilsCache.at < 30_000) return profilsCache.map;
+  if (cacheProfils && Date.now() - cacheProfils.at < 30_000) return cacheProfils.map;
   const { data } = await supabase.from("profiles").select("id, full_name");
   const map = new Map<string, string>((data ?? []).map((p) => [p.id, p.full_name]));
-  profilsCache = { at: Date.now(), map };
+  cacheProfils = { at: Date.now(), map };
   return map;
 }
-function inValiderCacheProfils() {
-  profilsCache = null;
+const invaliderProfils = () => { cacheProfils = null; };
+
+interface EtabResume { id: number; nom: string; couleur: string; ordre: number; actif: boolean }
+
+let cacheEtabs: { at: number; liste: EtabResume[] } | null = null;
+async function etablissements(): Promise<EtabResume[]> {
+  if (cacheEtabs && Date.now() - cacheEtabs.at < 30_000) return cacheEtabs.liste;
+  const { data } = await supabase
+    .from("establishments").select("id, nom, couleur, ordre, actif").order("ordre");
+  const liste = (data ?? []) as EtabResume[];
+  cacheEtabs = { at: Date.now(), liste };
+  return liste;
+}
+const invaliderEtabs = () => { cacheEtabs = null; };
+
+async function nomsEtablissements(): Promise<Map<number, EtabResume>> {
+  return new Map((await etablissements()).map((e) => [e.id, e]));
 }
 
-/**
- * Numéro séquentiel lisible du jour : PREFIX-AAAAMMJJ-0001.
- * Deux caisses peuvent tomber sur le même numéro en même temps ; l'unicité est
- * garantie par l'index, et l'appelant réessaie (cf. insertionAvecNumero).
- */
-async function prochainNumero(prefix: string, table: string, colonne: string): Promise<string> {
-  const jour = new Date();
-  const cle = `${jour.getFullYear()}${String(jour.getMonth() + 1).padStart(2, "0")}${String(jour.getDate()).padStart(2, "0")}`;
-  const motif = `${prefix}-${cle}-%`;
+async function nomEtablissement(id: number | null): Promise<string> {
+  if (id === null) return "Tous les établissements";
+  return (await nomsEtablissements()).get(id)?.nom ?? "Établissement inconnu";
+}
 
+async function prochainNumero(prefix: string, table: string, colonne: string): Promise<string> {
+  const jour = versLocal(new Date());
+  const cle = jour.toISOString().slice(0, 10).replace(/-/g, "");
   const { count } = await supabase
     .from(table)
     .select(colonne, { count: "exact", head: true })
-    .like(colonne, motif);
-
+    .like(colonne, `${prefix}-${cle}-%`);
   return `${prefix}-${cle}-${String((count ?? 0) + 1).padStart(4, "0")}`;
 }
 
 const CODE_CONFLIT_UNICITE = "23505";
 
-/** Insère en réessayant si le numéro généré vient d'être pris par un collègue. */
 async function insertionAvecNumero<T>(
   prefix: string,
   table: string,
@@ -170,12 +222,7 @@ async function insertionAvecNumero<T>(
 ): Promise<T> {
   for (let essai = 0; essai < 5; essai++) {
     const numero = await prochainNumero(prefix, table, colonne);
-    const { data, error } = await supabase
-      .from(table)
-      .insert(construire(numero))
-      .select()
-      .single();
-
+    const { data, error } = await supabase.from(table).insert(construire(numero)).select().single();
     if (!error) return data as T;
     if (error.code !== CODE_CONFLIT_UNICITE) throw new Error(error.message);
   }
@@ -183,38 +230,27 @@ async function insertionAvecNumero<T>(
 }
 
 // --- Périodes et fuseau horaire --------------------------------------------
+// L'entreprise est à Brazzaville : UTC+1 toute l'année, sans heure d'été. Ce
+// décalage est appliqué explicitement au lieu de se fier au fuseau du serveur,
+// qui est en UTC sur Vercel : sinon « aujourd'hui » commencerait à 23 h la
+// veille, et les ventes de début de soirée tomberaient dans le mauvais jour.
 
-// L'entreprise est à Brazzaville : UTC+1 toute l'année, sans heure d'été.
-// Ce décalage est appliqué explicitement au lieu de se fier au fuseau du
-// serveur, qui est en UTC sur Vercel : sinon « aujourd'hui » commencerait à
-// 23 h la veille pour la boutique, et les ventes de début de soirée
-// tomberaient dans le mauvais jour — inacceptable pour un rapprochement de
-// caisse quotidien.
 const DECALAGE_MINUTES = 60;
 
-/** Instant → date « vue de Brazzaville », lisible avec les accesseurs UTC. */
 function versLocal(instant: Date): Date {
   return new Date(instant.getTime() + DECALAGE_MINUTES * 60_000);
 }
-
-/** Date locale (champs UTC) → instant réel correspondant. */
 function versInstant(local: Date): Date {
   return new Date(local.getTime() - DECALAGE_MINUTES * 60_000);
 }
-
-/** Jour local au format AAAA-MM-JJ, pour les colonnes `date` de Postgres. */
 function jourLocal(instant: Date): string {
   return versLocal(instant).toISOString().slice(0, 10);
 }
 
 interface Bornes {
-  /** Borne basse incluse, en instant réel (colonnes `timestamptz`). */
   debut: Date;
-  /** Borne haute exclue, en instant réel. */
   fin: Date;
-  /** Premier jour inclus, AAAA-MM-JJ (colonnes `date`). */
   debutJour: string;
-  /** Dernier jour inclus, AAAA-MM-JJ. Distinct de `fin`, qui est exclusive. */
   finJour: string;
   libelle: string;
 }
@@ -223,18 +259,13 @@ function bornesPeriode(query: Record<string, unknown>): Bornes {
   const periode = String(query.periode ?? "jour");
   const maintenant = new Date();
   const local = versLocal(maintenant);
-
-  /** Minuit local d'une date exprimée en champs UTC. */
-  const minuit = (annee: number, mois: number, jour: number) =>
-    versInstant(new Date(Date.UTC(annee, mois, jour)));
+  const minuit = (a: number, m: number, j: number) => versInstant(new Date(Date.UTC(a, m, j)));
 
   if (periode === "personnalise" && query.debut && query.fin) {
     const debutJour = String(query.debut);
     const finJour = String(query.fin);
     return {
       debut: versInstant(new Date(`${debutJour}T00:00:00.000Z`)),
-      // L'utilisateur choisit une date de fin incluse : la borne exclusive est
-      // le lendemain à minuit, pour couvrir toute la journée.
       fin: versInstant(new Date(Date.parse(`${finJour}T00:00:00.000Z`) + 86_400_000)),
       debutJour,
       finJour,
@@ -249,44 +280,23 @@ function bornesPeriode(query: Record<string, unknown>): Bornes {
 
   switch (periode) {
     case "semaine": {
-      // Semaine commençant le lundi (getUTCDay() : 0 = dimanche).
       const decalage = (local.getUTCDay() + 6) % 7;
       const debut = minuit(annee, mois, jour - decalage);
-      return {
-        debut, fin: maintenant,
-        debutJour: jourLocal(debut), finJour,
-        libelle: "Cette semaine",
-      };
+      return { debut, fin: maintenant, debutJour: jourLocal(debut), finJour, libelle: "Cette semaine" };
     }
     case "mois": {
       const debut = minuit(annee, mois, 1);
-      return {
-        debut, fin: maintenant,
-        debutJour: jourLocal(debut), finJour,
-        libelle: "Ce mois-ci",
-      };
+      return { debut, fin: maintenant, debutJour: jourLocal(debut), finJour, libelle: "Ce mois-ci" };
     }
     case "annee": {
       const debut = minuit(annee, 0, 1);
-      return {
-        debut, fin: maintenant,
-        debutJour: jourLocal(debut), finJour,
-        libelle: "Cette année",
-      };
+      return { debut, fin: maintenant, debutJour: jourLocal(debut), finJour, libelle: "Cette année" };
     }
     default: {
       const debut = minuit(annee, mois, jour);
-      return {
-        debut, fin: maintenant,
-        debutJour: finJour, finJour,
-        libelle: "Aujourd'hui",
-      };
+      return { debut, fin: maintenant, debutJour: finJour, finJour, libelle: "Aujourd'hui" };
     }
   }
-}
-
-function estPoleValide(v: unknown): v is Pole {
-  return v === "MULTI_SERVICES" || v === "FOOD";
 }
 
 // ============================================================================
@@ -308,34 +318,120 @@ export function createApiApp() {
     const { data, error } = await supabase
       .from("profiles").select("*").eq("id", req.profil!.id).single();
     if (error) throw new Error(error.message);
+
+    const etabs = await nomsEtablissements();
+    res.json({
+      ...toCamelCase(data),
+      etablissementNom: data.establishment_id
+        ? etabs.get(data.establishment_id)?.nom ?? null
+        : null,
+      /** Le frontend s'en sert pour afficher ou non le sélecteur. */
+      peutChangerEtablissement: data.establishment_id === null,
+    });
+  }));
+
+  // -------------------------------------------------------------------------
+  // Établissements
+  // -------------------------------------------------------------------------
+
+  /** Liste des établissements accessibles au profil connecté. */
+  api.get("/establishments", route(async (req, res) => {
+    const liste = await etablissements();
+    const visibles = estTransversal(req.profil!)
+      ? liste.filter((e) => e.actif)
+      : liste.filter((e) => e.id === req.profil!.establishmentId);
+
+    const { data } = await supabase
+      .from("establishments").select("*").in("id", visibles.map((e) => e.id)).order("ordre");
+    res.json(toCamelCaseArray(data ?? []));
+  }));
+
+  api.post("/establishments", requireRole(...ADMIN), route(async (req, res) => {
+    const { nom, slug, activite, adresse, telephone, email, couleur, ordre } = req.body;
+    if (!nom || !slug) {
+      return res.status(400).json({ error: "Le nom et l'identifiant court sont obligatoires." });
+    }
+
+    const { data, error } = await supabase
+      .from("establishments")
+      .insert({
+        nom, slug: String(slug).trim().toLowerCase(),
+        activite: activite ?? null, adresse: adresse ?? null,
+        telephone: telephone ?? null, email: email ?? null,
+        couleur: couleur ?? "#1fa066", ordre: ordre ?? 99,
+      })
+      .select().single();
+
+    if (error?.code === CODE_CONFLIT_UNICITE) {
+      return res.status(409).json({ error: "Un établissement porte déjà ce nom ou cet identifiant." });
+    }
+    if (error) throw new Error(error.message);
+
+    invaliderEtabs();
+    journaliser(req.profil!, "creation_etablissement", "establishments", data.id, { apres: data });
+    res.status(201).json(toCamelCase(data));
+  }));
+
+  api.patch("/establishments/:id", requireRole(...ADMIN), route(async (req, res) => {
+    const { data: avant } = await supabase
+      .from("establishments").select("*").eq("id", req.params.id).single();
+
+    const champs = ["nom", "activite", "adresse", "telephone", "email", "couleur", "ordre", "actif"];
+    const maj = toSnakeCase(
+      Object.fromEntries(Object.entries(req.body).filter(([k]) => champs.includes(k)))
+    );
+
+    const { data, error } = await supabase
+      .from("establishments").update(maj).eq("id", req.params.id).select().single();
+    if (error) throw new Error(error.message);
+
+    invaliderEtabs();
+    journaliser(req.profil!, "modification_etablissement", "establishments", req.params.id, {
+      avant, apres: data,
+    });
     res.json(toCamelCase(data));
   }));
 
   // -------------------------------------------------------------------------
-  // §5.1 Gestion des utilisateurs — administrateur uniquement
+  // §5.1 Gestion des utilisateurs
   // -------------------------------------------------------------------------
 
-  api.get("/users", requireRole(...TOUS), route(async (_req, res) => {
-    const { data, error } = await supabase
-      .from("profiles").select("*").order("full_name");
+  api.get("/users", requireRole(...TOUS), route(async (req, res) => {
+    let q = supabase.from("profiles").select("*").order("full_name");
+    // Un responsable rattaché ne voit que l'équipe de son établissement.
+    if (!estTransversal(req.profil!)) q = q.eq("establishment_id", req.profil!.establishmentId);
+
+    const { data, error } = await q;
     if (error) throw new Error(error.message);
-    res.json(toCamelCaseArray(data ?? []));
+
+    const etabs = await nomsEtablissements();
+    res.json(
+      (data ?? []).map((u) => ({
+        ...toCamelCase(u),
+        etablissementNom: u.establishment_id ? etabs.get(u.establishment_id)?.nom ?? null : null,
+      }))
+    );
   }));
 
-  /**
-   * Crée le compte Auth *et* le profil. Le mot de passe initial est fourni par
-   * l'administrateur et transmis à l'employé ; email_confirm est forcé pour que
-   * l'employé puisse se connecter immédiatement, sans boîte mail à valider
-   * (beaucoup d'agents n'ont pas d'adresse e-mail active).
-   */
   api.post("/users", requireRole(...ADMIN), route(async (req, res) => {
-    const { email, password, fullName, role, pole, poste, telephone, salaire, dateEntree } = req.body;
+    const {
+      email, password, fullName, role, establishmentId, poste, telephone, salaire, dateEntree,
+    } = req.body;
 
     if (!email || !password || !fullName) {
       return res.status(400).json({ error: "Email, mot de passe et nom complet sont obligatoires." });
     }
     if (String(password).length < 8) {
       return res.status(400).json({ error: "Le mot de passe doit faire au moins 8 caractères." });
+    }
+
+    // Un caissier ou un technicien travaille dans un établissement précis :
+    // sans rattachement, il aurait accès à tous, ce que le §5.1 exclut.
+    const rattachement = establishmentId ? Number(establishmentId) : null;
+    if ((role === "caissier" || role === "technicien") && !rattachement) {
+      return res.status(400).json({
+        error: "Un caissier ou un technicien doit être rattaché à un établissement.",
+      });
     }
 
     const { data: auth, error: authErr } = await supabase.auth.admin.createUser({
@@ -350,7 +446,7 @@ export function createApiApp() {
         full_name: fullName,
         email,
         role: role ?? "caissier",
-        pole: pole ?? null,
+        establishment_id: rattachement,
         poste: poste ?? null,
         telephone: telephone ?? null,
         salaire: salaire ?? null,
@@ -359,14 +455,15 @@ export function createApiApp() {
       .select().single();
 
     if (error) {
-      // Le compte Auth existe déjà mais le profil a échoué : on le supprime
-      // pour ne pas laisser un compte capable de se connecter sans profil.
+      // Ne pas laisser un compte capable de se connecter sans profil.
       await supabase.auth.admin.deleteUser(auth.user.id);
       throw new Error(error.message);
     }
 
-    inValiderCacheProfils();
-    journaliser(req.profil!, "creation_utilisateur", "profiles", data.id, { apres: { email, role } });
+    invaliderProfils();
+    journaliser(req.profil!, "creation_utilisateur", "profiles", data.id, {
+      apres: { email, role, establishmentId: rattachement },
+    });
     res.status(201).json(toCamelCase(data));
   }));
 
@@ -374,23 +471,37 @@ export function createApiApp() {
     const { data: avant } = await supabase
       .from("profiles").select("*").eq("id", req.params.id).single();
 
-    const champs = ["fullName", "role", "pole", "poste", "telephone", "salaire", "dateEntree", "actif"];
-    const maj = toSnakeCase(
-      Object.fromEntries(Object.entries(req.body).filter(([k]) => champs.includes(k)))
-    );
+    const champs = [
+      "fullName", "role", "establishmentId", "poste", "telephone", "salaire", "dateEntree", "actif",
+    ];
+    const corps = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => champs.includes(k))
+    ) as Record<string, unknown>;
+
+    const roleFinal = (corps.role ?? avant.role) as UserRole;
+    const etabFinal =
+      corps.establishmentId !== undefined
+        ? (corps.establishmentId ? Number(corps.establishmentId) : null)
+        : (avant.establishment_id as number | null);
+
+    if ((roleFinal === "caissier" || roleFinal === "technicien") && etabFinal === null) {
+      return res.status(400).json({
+        error: "Un caissier ou un technicien doit être rattaché à un établissement.",
+      });
+    }
+    if (corps.establishmentId !== undefined) corps.establishmentId = etabFinal;
 
     const { data, error } = await supabase
-      .from("profiles").update(maj).eq("id", req.params.id).select().single();
+      .from("profiles").update(toSnakeCase(corps)).eq("id", req.params.id).select().single();
     if (error) throw new Error(error.message);
 
-    inValiderCacheProfils();
+    invaliderProfils();
     journaliser(req.profil!, "modification_utilisateur", "profiles", req.params.id, {
       avant, apres: data, motif: req.body.motif,
     });
     res.json(toCamelCase(data));
   }));
 
-  /** Réinitialisation du mot de passe d'un employé par l'administrateur. */
   api.post("/users/:id/password", requireRole(...ADMIN), route(async (req, res) => {
     const { password } = req.body;
     if (!password || String(password).length < 8) {
@@ -407,16 +518,26 @@ export function createApiApp() {
   // Catégories
   // -------------------------------------------------------------------------
 
-  api.get("/categories", route(async (_req, res) => {
-    const { data, error } = await supabase
-      .from("categories").select("*").order("pole").order("ordre");
+  api.get("/categories", route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let q = supabase.from("categories").select("*").order("ordre");
+    q = filtrerEtablissement(q, portee.id);
+
+    const { data, error } = await q;
     if (error) throw new Error(error.message);
     res.json(toCamelCaseArray(data ?? []));
   }));
 
   api.post("/categories", requireRole(...ADMIN), route(async (req, res) => {
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
+
     const { data, error } = await supabase
-      .from("categories").insert(toSnakeCase(req.body)).select().single();
+      .from("categories")
+      .insert({ ...toSnakeCase(req.body), establishment_id: cible.id })
+      .select().single();
     if (error) throw new Error(error.message);
     res.status(201).json(toCamelCase(data));
   }));
@@ -429,12 +550,15 @@ export function createApiApp() {
   }));
 
   // -------------------------------------------------------------------------
-  // §2, §3, §5.5 Catalogue produits et prestations
+  // Catalogue (§2, §3, §5.5)
   // -------------------------------------------------------------------------
 
   api.get("/products", route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
     let q = supabase.from("products").select("*, categories(nom)").order("nom");
-    if (estPoleValide(req.query.pole)) q = q.eq("pole", req.query.pole);
+    q = filtrerEtablissement(q, portee.id);
     if (req.query.actif !== "tous") q = q.eq("actif", true);
 
     const { data, error } = await q;
@@ -449,8 +573,13 @@ export function createApiApp() {
   }));
 
   api.post("/products", requireRole(...ADMIN), route(async (req, res) => {
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
+
     const { data, error } = await supabase
-      .from("products").insert(toSnakeCase(req.body)).select().single();
+      .from("products")
+      .insert({ ...toSnakeCase(req.body), establishment_id: cible.id })
+      .select().single();
     if (error) throw new Error(error.message);
 
     journaliser(req.profil!, "creation_produit", "products", data.id, { apres: data });
@@ -459,8 +588,8 @@ export function createApiApp() {
 
   /**
    * §5.1 « Modification des prix » est réservée à l'administrateur, et §5.10
-   * impose d'en garder trace : tout changement de prix de vente ou d'achat est
-   * journalisé avec l'ancienne et la nouvelle valeur.
+   * impose d'en garder trace : tout changement de prix est journalisé avec
+   * l'ancienne et la nouvelle valeur.
    */
   api.patch("/products/:id", requireRole(...ADMIN), route(async (req, res) => {
     const { data: avant, error: errAvant } = await supabase
@@ -469,19 +598,17 @@ export function createApiApp() {
 
     // La quantité ne se modifie jamais directement : elle passe par un
     // mouvement de stock, sinon l'historique du §5.5 devient faux.
-    const { quantite: _ignore, ...corps } = req.body;
+    const { quantite: _ignore, establishmentId: _fige, ...corps } = req.body;
 
     const { data, error } = await supabase
       .from("products").update(toSnakeCase(corps)).eq("id", req.params.id).select().single();
     if (error) throw new Error(error.message);
 
-    const prixChange =
-      avant.prix_vente !== data.prix_vente || avant.prix_achat !== data.prix_achat;
+    const prixChange = avant.prix_vente !== data.prix_vente || avant.prix_achat !== data.prix_achat;
     journaliser(
       req.profil!,
       prixChange ? "modification_prix" : "modification_produit",
-      "products",
-      req.params.id,
+      "products", req.params.id,
       { avant, apres: data, motif: req.body.motif }
     );
     res.json(toCamelCase(data));
@@ -491,17 +618,26 @@ export function createApiApp() {
   // §2.4 Packs
   // -------------------------------------------------------------------------
 
-  api.get("/packs", route(async (_req, res) => {
-    const { data, error } = await supabase
+  api.get("/packs", route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let q = supabase
       .from("packs")
       .select("*, pack_items(id, pack_id, product_id, quantite, products(nom, prix_vente))")
       .order("nom");
+    q = filtrerEtablissement(q, portee.id);
+
+    const { data, error } = await q;
     if (error) throw new Error(error.message);
 
     res.json(
       (data ?? []).map((row: Record<string, unknown>) => {
         const { pack_items, ...reste } = row as {
-          pack_items?: { id: number; pack_id: number; product_id: number; quantite: number; products?: { nom: string; prix_vente: number } }[];
+          pack_items?: {
+            id: number; pack_id: number; product_id: number; quantite: number;
+            products?: { nom: string; prix_vente: number };
+          }[];
         };
         return {
           ...toCamelCase(reste),
@@ -519,9 +655,14 @@ export function createApiApp() {
   }));
 
   api.post("/packs", requireRole(...ADMIN), route(async (req, res) => {
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
+
     const { items, ...pack } = req.body;
     const { data, error } = await supabase
-      .from("packs").insert(toSnakeCase(pack)).select().single();
+      .from("packs")
+      .insert({ ...toSnakeCase(pack), establishment_id: cible.id })
+      .select().single();
     if (error) throw new Error(error.message);
 
     if (Array.isArray(items) && items.length) {
@@ -539,7 +680,7 @@ export function createApiApp() {
 
   /** Remplace intégralement la composition : plus simple et sans état orphelin. */
   api.patch("/packs/:id", requireRole(...ADMIN), route(async (req, res) => {
-    const { items, ...pack } = req.body;
+    const { items, establishmentId: _fige, ...pack } = req.body;
     const { data: avant } = await supabase
       .from("packs").select("*").eq("id", req.params.id).single();
 
@@ -564,7 +705,7 @@ export function createApiApp() {
   }));
 
   // -------------------------------------------------------------------------
-  // §5.6 Fournisseurs
+  // §5.6 Fournisseurs — communs à tous les établissements
   // -------------------------------------------------------------------------
 
   api.get("/suppliers", route(async (_req, res) => {
@@ -588,7 +729,7 @@ export function createApiApp() {
   }));
 
   // -------------------------------------------------------------------------
-  // §5.9 Clients
+  // §5.9 Clients — communs à tous les établissements
   // -------------------------------------------------------------------------
 
   api.get("/customers", route(async (req, res) => {
@@ -615,22 +756,34 @@ export function createApiApp() {
     res.json(toCamelCase(data));
   }));
 
-  /** §5.9 : fiche client avec historique d'achats, commandes en cours et total dépensé. */
+  /**
+   * §5.9 : fiche client avec historique d'achats et commandes en cours.
+   * Le client est commun aux établissements, mais son historique reste filtré
+   * par la portée de celui qui consulte.
+   */
   api.get("/customers/:id", route(async (req, res) => {
     const id = Number(req.params.id);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let qVentes = supabase.from("sales").select("*").eq("customer_id", id)
+      .order("created_at", { ascending: false }).limit(100);
+    qVentes = filtrerEtablissement(qVentes, portee.id);
+
+    let qCommandes = supabase.from("orders").select("*").eq("customer_id", id)
+      .order("date_commande", { ascending: false });
+    qCommandes = filtrerEtablissement(qCommandes, portee.id);
 
     const [{ data: client }, { data: ventes }, { data: commandes }] = await Promise.all([
       supabase.from("customers").select("*").eq("id", id).single(),
-      supabase.from("sales").select("*").eq("customer_id", id)
-        .order("created_at", { ascending: false }).limit(100),
-      supabase.from("orders").select("*").eq("customer_id", id)
-        .order("date_commande", { ascending: false }),
+      qVentes,
+      qCommandes,
     ]);
 
     if (!client) return res.status(404).json({ error: "Client introuvable." });
 
     const validees = (ventes ?? []).filter((v) => v.statut === "validee");
-    const noms = await nomsEmployes();
+    const [noms, etabs] = await Promise.all([nomsEmployes(), nomsEtablissements()]);
 
     res.json({
       ...toCamelCase(client),
@@ -639,6 +792,7 @@ export function createApiApp() {
       ventes: (ventes ?? []).map((v) => ({
         ...toCamelCase(v),
         vendeurNom: noms.get(v.vendeur_id) ?? null,
+        etablissementNom: etabs.get(v.establishment_id)?.nom ?? null,
       })),
       commandes: toCamelCaseArray(commandes ?? []),
     });
@@ -655,9 +809,7 @@ export function createApiApp() {
    */
   async function soldeTheorique(sessionId: number, fondsInitial: number): Promise<number> {
     const { data, error } = await supabase
-      .from("cash_movements")
-      .select("montant, payment_method")
-      .eq("session_id", sessionId);
+      .from("cash_movements").select("montant, payment_method").eq("session_id", sessionId);
     if (error) throw new Error(error.message);
 
     return (data ?? [])
@@ -665,23 +817,24 @@ export function createApiApp() {
       .reduce((total, m) => total + Number(m.montant), fondsInitial);
   }
 
-  /** Session ouverte du pôle, ou null. */
-  async function sessionOuverte(pole: Pole) {
+  async function sessionOuverte(establishmentId: number) {
     const { data, error } = await supabase
-      .from("cash_sessions").select("*").eq("pole", pole).eq("statut", "ouverte").maybeSingle();
+      .from("cash_sessions").select("*")
+      .eq("establishment_id", establishmentId).eq("statut", "ouverte").maybeSingle();
     if (error) throw new Error(error.message);
     return data;
   }
 
   api.get("/cash/current", route(async (req, res) => {
-    const pole = req.query.pole;
-    if (!estPoleValide(pole)) return res.status(400).json({ error: "Pôle invalide." });
+    const cible = etablissementEcriture(req.profil!, req.query.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
 
-    const session = await sessionOuverte(pole);
+    const session = await sessionOuverte(cible.id);
     if (!session) return res.json(null);
 
-    const noms = await nomsEmployes();
-    const [theorique, { data: mouvements }] = await Promise.all([
+    const [noms, etabs, theorique, { data: mouvements }] = await Promise.all([
+      nomsEmployes(),
+      nomsEtablissements(),
       soldeTheorique(session.id, Number(session.fonds_initial)),
       supabase.from("cash_movements").select("*").eq("session_id", session.id)
         .order("created_at", { ascending: false }),
@@ -689,6 +842,7 @@ export function createApiApp() {
 
     res.json({
       ...toCamelCase(session),
+      etablissementNom: etabs.get(session.establishment_id)?.nom ?? null,
       openedByNom: noms.get(session.opened_by) ?? null,
       soldeTheorique: theorique,
       mouvements: (mouvements ?? []).map((m) => ({
@@ -699,28 +853,27 @@ export function createApiApp() {
   }));
 
   api.post("/cash/open", requireRole(...ENCAISSENT), route(async (req, res) => {
-    const { pole, fondsInitial, notes } = req.body;
-    if (!estPoleValide(pole)) return res.status(400).json({ error: "Pôle invalide." });
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
 
-    if (await sessionOuverte(pole)) {
+    if (await sessionOuverte(cible.id)) {
       return res.status(409).json({
-        error: "Une caisse est déjà ouverte pour ce pôle. Fermez-la avant d'en ouvrir une nouvelle.",
+        error: "Une caisse est déjà ouverte pour cet établissement. Fermez-la avant d'en ouvrir une nouvelle.",
       });
     }
 
     const { data, error } = await supabase
       .from("cash_sessions")
       .insert({
-        pole,
-        fonds_initial: Number(fondsInitial) || 0,
+        establishment_id: cible.id,
+        fonds_initial: Number(req.body.fondsInitial) || 0,
         opened_by: req.profil!.id,
-        notes: notes ?? null,
+        notes: req.body.notes ?? null,
       })
       .select().single();
 
-    // L'index unique partiel rattrape deux ouvertures simultanées.
     if (error?.code === CODE_CONFLIT_UNICITE) {
-      return res.status(409).json({ error: "Une caisse vient d'être ouverte pour ce pôle." });
+      return res.status(409).json({ error: "Une caisse vient d'être ouverte pour cet établissement." });
     }
     if (error) throw new Error(error.message);
 
@@ -728,17 +881,16 @@ export function createApiApp() {
     res.status(201).json(toCamelCase(data));
   }));
 
-  /**
-   * §5.3 Fermeture : le caissier saisit le solde physique compté, le serveur
-   * recalcule le théorique et enregistre l'écart. L'écart n'est jamais corrigé
-   * silencieusement — c'est l'indicateur central du contrôle interne.
-   */
   api.post("/cash/close", requireRole(...ENCAISSENT), route(async (req, res) => {
     const { sessionId, soldePhysique, notes } = req.body;
 
     const { data: session, error: errSession } = await supabase
       .from("cash_sessions").select("*").eq("id", sessionId).single();
     if (errSession) throw new Error(errSession.message);
+
+    if (!estTransversal(req.profil!) && session.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cette caisse ne relève pas de votre établissement." });
+    }
     if (session.statut === "fermee") {
       return res.status(409).json({ error: "Cette caisse est déjà fermée." });
     }
@@ -762,18 +914,23 @@ export function createApiApp() {
     if (error) throw new Error(error.message);
 
     journaliser(req.profil!, "fermeture_caisse", "cash_sessions", sessionId, {
-      apres: { theorique, physique, ecart: physique - theorique },
-      motif: notes,
+      apres: { theorique, physique, ecart: physique - theorique }, motif: notes,
     });
     res.json(toCamelCase(data));
   }));
 
-  /** Entrées/sorties d'argent hors ventes et dépenses (§5.3). */
   api.post("/cash/movements", requireRole(...ENCAISSENT), route(async (req, res) => {
     const { sessionId, type, montant, motif, paymentMethod } = req.body;
 
     if (!motif || !String(motif).trim()) {
       return res.status(400).json({ error: "Un motif est obligatoire pour tout mouvement de caisse." });
+    }
+
+    const { data: session } = await supabase
+      .from("cash_sessions").select("establishment_id, statut").eq("id", sessionId).maybeSingle();
+    if (!session) return res.status(404).json({ error: "Caisse introuvable." });
+    if (!estTransversal(req.profil!) && session.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cette caisse ne relève pas de votre établissement." });
     }
 
     // Le signe est imposé par le type : l'utilisateur saisit toujours un
@@ -784,33 +941,31 @@ export function createApiApp() {
     const { data, error } = await supabase
       .from("cash_movements")
       .insert({
-        session_id: sessionId,
-        type,
-        montant: valeur,
-        motif,
-        payment_method: paymentMethod ?? "especes",
-        created_by: req.profil!.id,
+        session_id: sessionId, type, montant: valeur, motif,
+        payment_method: paymentMethod ?? "especes", created_by: req.profil!.id,
       })
       .select().single();
     if (error) throw new Error(error.message);
 
-    journaliser(req.profil!, "mouvement_caisse", "cash_movements", data.id, {
-      motif, apres: data,
-    });
+    journaliser(req.profil!, "mouvement_caisse", "cash_movements", data.id, { motif, apres: data });
     res.status(201).json(toCamelCase(data));
   }));
 
   api.get("/cash/sessions", requireRole(...VALIDENT), route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
     let q = supabase.from("cash_sessions").select("*").order("opened_at", { ascending: false });
-    if (estPoleValide(req.query.pole)) q = q.eq("pole", req.query.pole);
+    q = filtrerEtablissement(q, portee.id);
 
     const { data, error } = await q.limit(200);
     if (error) throw new Error(error.message);
 
-    const noms = await nomsEmployes();
+    const [noms, etabs] = await Promise.all([nomsEmployes(), nomsEtablissements()]);
     res.json(
       (data ?? []).map((s) => ({
         ...toCamelCase(s),
+        etablissementNom: etabs.get(s.establishment_id)?.nom ?? null,
         openedByNom: noms.get(s.opened_by) ?? null,
         closedByNom: s.closed_by ? noms.get(s.closed_by) ?? null : null,
       }))
@@ -823,24 +978,28 @@ export function createApiApp() {
 
   api.get("/sales", route(async (req, res) => {
     const { debut, fin } = bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
 
-    let q = supabase
-      .from("sales").select("*")
+    let q = supabase.from("sales").select("*")
       .gte("created_at", debut.toISOString())
       .lt("created_at", fin.toISOString())
       .order("created_at", { ascending: false });
+    q = filtrerEtablissement(q, portee.id);
 
-    if (estPoleValide(req.query.pole)) q = q.eq("pole", req.query.pole);
-    // Un caissier ne consulte que ses propres ventes ; responsable et admin
-    // voient tout (§5.1 « Consultation des ventes »).
+    // Un caissier ne consulte que ses propres ventes (§5.1).
     if (req.profil!.role === "caissier") q = q.eq("vendeur_id", req.profil!.id);
 
     const { data, error } = await q.limit(500);
     if (error) throw new Error(error.message);
 
-    const noms = await nomsEmployes();
+    const [noms, etabs] = await Promise.all([nomsEmployes(), nomsEtablissements()]);
     res.json(
-      (data ?? []).map((v) => ({ ...toCamelCase(v), vendeurNom: noms.get(v.vendeur_id) ?? null }))
+      (data ?? []).map((v) => ({
+        ...toCamelCase(v),
+        vendeurNom: noms.get(v.vendeur_id) ?? null,
+        etablissementNom: etabs.get(v.establishment_id)?.nom ?? null,
+      }))
     );
   }));
 
@@ -851,7 +1010,11 @@ export function createApiApp() {
     ]);
     if (!vente) return res.status(404).json({ error: "Vente introuvable." });
 
-    const noms = await nomsEmployes();
+    if (!estTransversal(req.profil!) && vente.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cette vente ne relève pas de votre établissement." });
+    }
+
+    const [noms, etabs] = await Promise.all([nomsEmployes(), nomsEtablissements()]);
     let clientNom: string | null = null;
     if (vente.customer_id) {
       const { data } = await supabase
@@ -862,6 +1025,7 @@ export function createApiApp() {
     res.json({
       ...toCamelCase(vente),
       vendeurNom: noms.get(vente.vendeur_id) ?? null,
+      etablissementNom: etabs.get(vente.establishment_id)?.nom ?? null,
       customerNom: clientNom,
       items: toCamelCaseArray(lignes ?? []),
     });
@@ -874,25 +1038,24 @@ export function createApiApp() {
    * Les prix ne sont jamais pris depuis le client : ils sont relus en base.
    * §5.1 réserve la modification des prix à l'administrateur — si le caissier
    * pouvait envoyer un prix arbitraire, cette règle ne vaudrait rien. Seule la
-   * remise, prévue au §5.2, permet de descendre sous le tarif, et elle est
-   * enregistrée comme telle.
+   * remise, prévue au §5.2, permet de descendre sous le tarif.
    */
   api.post("/sales", requireRole(...ENCAISSENT), route(async (req, res) => {
-    const { pole, items, paymentMethod, numeroTransaction, remise, customerId } = req.body;
+    const { items, paymentMethod, numeroTransaction, remise, customerId } = req.body;
 
-    if (!estPoleValide(pole)) return res.status(400).json({ error: "Pôle invalide." });
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "La vente doit contenir au moins une ligne." });
     }
 
-    const session = await sessionOuverte(pole);
+    const session = await sessionOuverte(cible.id);
     if (!session) {
       return res.status(409).json({
-        error: "Aucune caisse ouverte pour ce pôle. Ouvrez la caisse avant d'enregistrer une vente.",
+        error: "Aucune caisse ouverte pour cet établissement. Ouvrez la caisse avant d'enregistrer une vente.",
       });
     }
 
-    // Relecture des tarifs officiels.
     const idsProduits = items.filter((i) => i.productId).map((i) => Number(i.productId));
     const idsPacks = items.filter((i) => i.packId).map((i) => Number(i.packId));
 
@@ -921,11 +1084,15 @@ export function createApiApp() {
 
       if (item.packId) {
         const pack = parPack.get(Number(item.packId)) as
-          | { id: number; nom: string; prix_vente: number; pack_items?: { product_id: number; quantite: number }[] }
+          | { id: number; nom: string; prix_vente: number; establishment_id: number;
+              pack_items?: { product_id: number; quantite: number }[] }
           | undefined;
         if (!pack) return res.status(400).json({ error: `Pack ${item.packId} introuvable.` });
+        // Un pack d'un autre établissement n'a rien à faire dans cette vente.
+        if (pack.establishment_id !== cible.id) {
+          return res.status(400).json({ error: `${pack.nom} n'appartient pas à cet établissement.` });
+        }
 
-        // Coût du pack = somme des prix d'achat de ses composants.
         const composants = pack.pack_items ?? [];
         let cout = 0;
         if (composants.length) {
@@ -945,9 +1112,13 @@ export function createApiApp() {
         });
       } else {
         const produit = parProduit.get(Number(item.productId)) as
-          | { id: number; nom: string; prix_vente: number; prix_achat: number; actif: boolean; gere_stock: boolean; quantite: number }
+          | { id: number; nom: string; prix_vente: number; prix_achat: number; actif: boolean;
+              gere_stock: boolean; quantite: number; establishment_id: number }
           | undefined;
         if (!produit) return res.status(400).json({ error: `Article ${item.productId} introuvable.` });
+        if (produit.establishment_id !== cible.id) {
+          return res.status(400).json({ error: `${produit.nom} n'appartient pas à cet établissement.` });
+        }
         if (!produit.actif) return res.status(400).json({ error: `${produit.nom} n'est plus au catalogue.` });
 
         if (produit.gere_stock && Number(produit.quantite) < quantite) {
@@ -976,7 +1147,7 @@ export function createApiApp() {
       "EMS", "sales", "numero_recu",
       (numero) => ({
         numero_recu: numero,
-        pole,
+        establishment_id: cible.id,
         session_id: session.id,
         customer_id: customerId ?? null,
         vendeur_id: req.profil!.id,
@@ -997,8 +1168,6 @@ export function createApiApp() {
       throw new Error(errLignes.message);
     }
 
-    // §5.5 « le stock doit diminuer automatiquement ». La fonction SQL fait le
-    // décrément et le journal en une opération atomique.
     for (const ligne of lignes) {
       if (!ligne.product_id) continue;
       const { error } = await supabase.rpc("apply_stock_movement", {
@@ -1023,14 +1192,15 @@ export function createApiApp() {
       created_by: req.profil!.id,
     });
 
-    res.status(201).json({ id: vente.id, numeroRecu: vente.numero_recu, total: sousTotal - remiseNum });
+    res.status(201).json({
+      id: vente.id, numeroRecu: vente.numero_recu, total: sousTotal - remiseNum,
+    });
   }));
 
   /**
    * §5.2 « Éventuelle annulation » + §5.10 : motif obligatoire, auteur et heure
    * conservés. La vente n'est jamais supprimée — elle passe au statut annulée,
    * le stock est restitué et un mouvement de caisse inverse est écrit.
-   * Réservé aux profils qui « valident » (§5.1).
    */
   api.post("/sales/:id/cancel", requireRole(...VALIDENT), route(async (req, res) => {
     const { motif } = req.body;
@@ -1041,6 +1211,10 @@ export function createApiApp() {
     const { data: vente, error: errVente } = await supabase
       .from("sales").select("*").eq("id", req.params.id).single();
     if (errVente) throw new Error(errVente.message);
+
+    if (!estTransversal(req.profil!) && vente.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cette vente ne relève pas de votre établissement." });
+    }
     if (vente.statut === "annulee") {
       return res.status(409).json({ error: "Cette vente est déjà annulée." });
     }
@@ -1057,7 +1231,6 @@ export function createApiApp() {
       .select().single();
     if (error) throw new Error(error.message);
 
-    // Restitution du stock.
     const { data: lignes } = await supabase
       .from("sale_items").select("*").eq("sale_id", req.params.id);
     for (const ligne of lignes ?? []) {
@@ -1073,9 +1246,9 @@ export function createApiApp() {
       });
     }
 
-    // Contre-passation en caisse, uniquement si la session est encore ouverte :
-    // annuler une vente d'hier ne doit pas modifier une caisse déjà arrêtée et
-    // dont l'écart a été constaté.
+    // Contre-passation uniquement si la caisse est encore ouverte : annuler une
+    // vente d'hier ne doit pas modifier une caisse déjà arrêtée dont l'écart a
+    // été constaté.
     if (vente.session_id) {
       const { data: session } = await supabase
         .from("cash_sessions").select("statut").eq("id", vente.session_id).maybeSingle();
@@ -1102,11 +1275,30 @@ export function createApiApp() {
   // §5.5 Stock
   // -------------------------------------------------------------------------
 
+  /** Identifiants des articles de la portée, pour filtrer les mouvements. */
+  async function produitsDeLaPortee(id: number | null): Promise<number[] | null> {
+    if (id === null) return null;
+    const { data } = await supabase.from("products").select("id").eq("establishment_id", id);
+    return (data ?? []).map((p) => p.id as number);
+  }
+
   api.get("/stock/movements", route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
     let q = supabase
       .from("stock_movements").select("*, products(nom)")
       .order("created_at", { ascending: false });
-    if (req.query.productId) q = q.eq("product_id", req.query.productId);
+
+    if (req.query.productId) {
+      q = q.eq("product_id", req.query.productId);
+    } else {
+      const ids = await produitsDeLaPortee(portee.id);
+      if (ids) {
+        if (ids.length === 0) return res.json([]);
+        q = q.in("product_id", ids);
+      }
+    }
 
     const { data, error } = await q.limit(300);
     if (error) throw new Error(error.message);
@@ -1124,15 +1316,20 @@ export function createApiApp() {
     );
   }));
 
-  /** §5.11 « Produits en rupture » et « bientôt en rupture ». */
-  api.get("/stock/alerts", route(async (_req, res) => {
-    const { data, error } = await supabase
-      .from("products").select("id, nom, pole, quantite, seuil_alerte, unite")
+  api.get("/stock/alerts", route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let q = supabase
+      .from("products").select("id, nom, establishment_id, quantite, seuil_alerte, unite")
       .eq("actif", true).eq("gere_stock", true);
+    q = filtrerEtablissement(q, portee.id);
+
+    const { data, error } = await q;
     if (error) throw new Error(error.message);
 
     const lignes = (data ?? []).map((p) => ({
-      id: p.id, nom: p.nom, pole: p.pole, unite: p.unite,
+      id: p.id, nom: p.nom, establishmentId: p.establishment_id, unite: p.unite,
       quantite: Number(p.quantite), seuilAlerte: Number(p.seuil_alerte),
     }));
 
@@ -1142,11 +1339,6 @@ export function createApiApp() {
     });
   }));
 
-  /**
-   * Ajustement d'inventaire (§5.5). Le motif est obligatoire : un écart de
-   * stock non expliqué est exactement ce que le contrôle interne cherche à
-   * empêcher.
-   */
   api.post("/stock/adjust", requireRole(...VALIDENT), route(async (req, res) => {
     const { productId, quantiteReelle, motif } = req.body;
     if (!motif || !String(motif).trim()) {
@@ -1156,6 +1348,10 @@ export function createApiApp() {
     const { data: produit, error: errProduit } = await supabase
       .from("products").select("*").eq("id", productId).single();
     if (errProduit) throw new Error(errProduit.message);
+
+    if (!estTransversal(req.profil!) && produit.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cet article ne relève pas de votre établissement." });
+    }
     if (!produit.gere_stock) {
       return res.status(400).json({ error: "Cet article ne fait pas l'objet d'un suivi de stock." });
     }
@@ -1188,41 +1384,45 @@ export function createApiApp() {
 
   api.get("/purchases", requireRole(...VALIDENT), route(async (req, res) => {
     const { debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
 
-    const { data, error } = await supabase
-      .from("purchases").select("*, suppliers(nom)")
-      .gte("date_achat", debutJour)
-      .lte("date_achat", finJour)
+    let q = supabase.from("purchases").select("*, suppliers(nom)")
+      .gte("date_achat", debutJour).lte("date_achat", finJour)
       .order("date_achat", { ascending: false });
+    q = filtrerEtablissement(q, portee.id);
+
+    const { data, error } = await q;
     if (error) throw new Error(error.message);
 
-    const noms = await nomsEmployes();
+    const [noms, etabs] = await Promise.all([nomsEmployes(), nomsEtablissements()]);
     res.json(
       (data ?? []).map((row: Record<string, unknown>) => {
-        const { suppliers, ...reste } = row as { suppliers?: { nom: string }; effectue_par?: string };
+        const { suppliers, ...reste } = row as {
+          suppliers?: { nom: string }; effectue_par?: string; establishment_id?: number;
+        };
         return {
           ...toCamelCase(reste),
           fournisseurNom: suppliers?.nom ?? null,
+          etablissementNom: etabs.get(reste.establishment_id!)?.nom ?? null,
           effectueParNom: reste.effectue_par ? noms.get(reste.effectue_par) ?? null : null,
         };
       })
     );
   }));
 
-  /**
-   * Un achat alimente le stock : chaque ligne rattachée à un produit suivi
-   * génère une entrée. Le prix d'achat du produit est aligné sur le dernier
-   * prix payé, pour que la marge du §5.13 reste juste.
-   */
   api.post("/purchases", requireRole(...VALIDENT), route(async (req, res) => {
-    const { supplierId, pole, dateAchat, montantPaye, paymentMethod, justificatif, notes, items } = req.body;
+    const { supplierId, dateAchat, montantPaye, paymentMethod, justificatif, notes, items } = req.body;
 
-    if (!estPoleValide(pole)) return res.status(400).json({ error: "Pôle invalide." });
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "L'achat doit contenir au moins une ligne." });
     }
 
-    const lignes = items.map((it: { productId?: number; libelle: string; quantite: number; prixUnitaire: number }) => ({
+    const lignes = items.map((it: {
+      productId?: number; libelle: string; quantite: number; prixUnitaire: number;
+    }) => ({
       product_id: it.productId ?? null,
       libelle: it.libelle,
       quantite: Number(it.quantite),
@@ -1237,7 +1437,7 @@ export function createApiApp() {
       (numero) => ({
         numero,
         supplier_id: supplierId ?? null,
-        pole,
+        establishment_id: cible.id,
         date_achat: dateAchat ?? jourLocal(new Date()),
         montant_total: montantTotal,
         montant_paye: paye,
@@ -1255,6 +1455,8 @@ export function createApiApp() {
       throw new Error(errLignes.message);
     }
 
+    // Un achat alimente le stock, et aligne le prix d'achat sur le dernier prix
+    // payé pour que la marge du §5.13 reste juste.
     for (const ligne of lignes) {
       if (!ligne.product_id) continue;
       await supabase.rpc("apply_stock_movement", {
@@ -1276,16 +1478,17 @@ export function createApiApp() {
     res.status(201).json({ id: achat.id, numero: achat.numero, montantTotal });
   }));
 
-  /** Règlement partiel ou total d'un achat à crédit (§5.6). */
   api.post("/purchases/:id/pay", requireRole(...VALIDENT), route(async (req, res) => {
-    const { montant } = req.body;
-
     const { data: achat, error: errAchat } = await supabase
       .from("purchases").select("*").eq("id", req.params.id).single();
     if (errAchat) throw new Error(errAchat.message);
 
+    if (!estTransversal(req.profil!) && achat.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cet achat ne relève pas de votre établissement." });
+    }
+
     const nouveauPaye = Math.min(
-      Number(achat.montant_paye) + (Number(montant) || 0),
+      Number(achat.montant_paye) + (Number(req.body.montant) || 0),
       Number(achat.montant_total)
     );
 
@@ -1306,6 +1509,9 @@ export function createApiApp() {
       supabase.from("purchase_items").select("*").eq("purchase_id", req.params.id).order("id"),
     ]);
     if (!achat) return res.status(404).json({ error: "Achat introuvable." });
+    if (!estTransversal(req.profil!) && achat.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cet achat ne relève pas de votre établissement." });
+    }
 
     const { suppliers, ...reste } = achat as { suppliers?: { nom: string } };
     res.json({
@@ -1321,36 +1527,33 @@ export function createApiApp() {
 
   api.get("/expenses", route(async (req, res) => {
     const { debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
 
-    let q = supabase
-      .from("expenses").select("*")
-      .gte("date_depense", debutJour)
-      .lte("date_depense", finJour)
+    let q = supabase.from("expenses").select("*")
+      .gte("date_depense", debutJour).lte("date_depense", finJour)
       .order("date_depense", { ascending: false });
-    if (estPoleValide(req.query.pole)) q = q.eq("pole", req.query.pole);
+    q = filtrerEtablissement(q, portee.id);
 
     const { data, error } = await q.limit(500);
     if (error) throw new Error(error.message);
 
-    const noms = await nomsEmployes();
+    const [noms, etabs] = await Promise.all([nomsEmployes(), nomsEtablissements()]);
     res.json(
       (data ?? []).map((d) => ({
         ...toCamelCase(d),
+        etablissementNom: etabs.get(d.establishment_id)?.nom ?? null,
         effectueParNom: d.effectue_par ? noms.get(d.effectue_par) ?? null : null,
         valideParNom: d.valide_par ? noms.get(d.valide_par) ?? null : null,
       }))
     );
   }));
 
-  /**
-   * Une dépense payée en espèces sort du tiroir : elle est immédiatement
-   * répercutée sur la caisse ouverte du pôle, sinon l'écart de fermeture
-   * serait systématiquement négatif.
-   */
   api.post("/expenses", requireRole(...ENCAISSENT), route(async (req, res) => {
-    const { pole, categorie, montant, motif, dateDepense, paymentMethod, justificatif } = req.body;
+    const { categorie, montant, motif, dateDepense, paymentMethod, justificatif } = req.body;
 
-    if (!estPoleValide(pole)) return res.status(400).json({ error: "Pôle invalide." });
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
     if (!motif || !String(motif).trim()) {
       return res.status(400).json({ error: "Le motif de la dépense est obligatoire." });
     }
@@ -1358,13 +1561,13 @@ export function createApiApp() {
       return res.status(400).json({ error: "Le montant doit être supérieur à zéro." });
     }
 
-    const session = await sessionOuverte(pole);
+    const session = await sessionOuverte(cible.id);
     const methode: PaymentMethod = paymentMethod ?? "especes";
 
     const { data, error } = await supabase
       .from("expenses")
       .insert({
-        pole,
+        establishment_id: cible.id,
         categorie,
         montant: Number(montant),
         motif,
@@ -1373,13 +1576,15 @@ export function createApiApp() {
         effectue_par: req.profil!.id,
         justificatif: justificatif ?? null,
         session_id: session?.id ?? null,
-        // L'auteur ne peut pas valider sa propre dépense : la validation reste
-        // un acte distinct, confié à un responsable (§5.7).
+        // L'auteur ne valide pas sa propre dépense : la validation reste un acte
+        // distinct, confié à un responsable (§5.7).
         valide_par: null,
       })
       .select().single();
     if (error) throw new Error(error.message);
 
+    // Une dépense en espèces sort du tiroir : sans cette écriture, l'écart de
+    // fermeture serait systématiquement négatif.
     if (session) {
       await supabase.from("cash_movements").insert({
         session_id: session.id,
@@ -1397,6 +1602,13 @@ export function createApiApp() {
   }));
 
   api.post("/expenses/:id/validate", requireRole(...VALIDENT), route(async (req, res) => {
+    const { data: depense } = await supabase
+      .from("expenses").select("establishment_id").eq("id", req.params.id).maybeSingle();
+    if (!depense) return res.status(404).json({ error: "Dépense introuvable." });
+    if (!estTransversal(req.profil!) && depense.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cette dépense ne relève pas de votre établissement." });
+    }
+
     const { data, error } = await supabase
       .from("expenses")
       .update({ valide_par: req.profil!.id, valide_le: new Date().toISOString() })
@@ -1408,11 +1620,15 @@ export function createApiApp() {
   }));
 
   // -------------------------------------------------------------------------
-  // §5.8 Commandes infographie
+  // §5.8 Commandes
   // -------------------------------------------------------------------------
 
   api.get("/orders", route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
     let q = supabase.from("orders").select("*").order("date_commande", { ascending: false });
+    q = filtrerEtablissement(q, portee.id);
     if (req.query.statut) q = q.eq("statut", String(req.query.statut));
 
     const { data, error } = await q.limit(300);
@@ -1433,6 +1649,8 @@ export function createApiApp() {
       quantite, prixUnitaire, acompte, dateLivraisonPrevue, technicienId,
     } = req.body;
 
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
     if (!customerNom || !typePrestation) {
       return res.status(400).json({ error: "Le nom du client et le type de prestation sont obligatoires." });
     }
@@ -1446,6 +1664,7 @@ export function createApiApp() {
       "CMD", "orders", "numero",
       (numero) => ({
         numero,
+        establishment_id: cible.id,
         customer_id: customerId ?? null,
         customer_nom: customerNom,
         customer_telephone: customerTelephone ?? null,
@@ -1456,8 +1675,6 @@ export function createApiApp() {
         montant_total: total,
         acompte: avance,
         date_livraison_prevue: dateLivraisonPrevue ?? null,
-        // Par défaut la commande revient à celui qui la saisit s'il est
-        // technicien — c'est le cas le plus fréquent au comptoir.
         technicien_id: technicienId ?? (req.profil!.role === "technicien" ? req.profil!.id : null),
       })
     );
@@ -1469,8 +1686,12 @@ export function createApiApp() {
   api.patch("/orders/:id", requireRole(...TOUS), route(async (req, res) => {
     const { data: avant } = await supabase
       .from("orders").select("*").eq("id", req.params.id).single();
+    if (!avant) return res.status(404).json({ error: "Commande introuvable." });
+    if (!estTransversal(req.profil!) && avant.establishment_id !== req.profil!.establishmentId) {
+      return res.status(403).json({ error: "Cette commande ne relève pas de votre établissement." });
+    }
 
-    const corps = { ...req.body };
+    const { establishmentId: _fige, ...corps } = req.body as Record<string, unknown>;
     // Le total et le reste se recalculent, ils ne se saisissent pas.
     if (corps.quantite != null || corps.prixUnitaire != null) {
       const qte = Number(corps.quantite ?? avant.quantite);
@@ -1495,67 +1716,89 @@ export function createApiApp() {
 
   api.get("/dashboard", route(async (req, res) => {
     const { debut, fin, debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
 
     // §5.1 : caissier et technicien n'ont qu'une consultation limitée. Leur
-    // afficher le chiffre d'affaires consolidé, les marges et le bénéfice de
-    // l'entreprise reviendrait à leur ouvrir la comptabilité par la fenêtre du
-    // tableau de bord. Ils voient donc leur propre activité, l'état de la
-    // caisse et les alertes de stock — ce dont ils ont besoin pour travailler.
+    // afficher marges et bénéfice reviendrait à leur ouvrir la comptabilité par
+    // la fenêtre du tableau de bord.
     const restreint = req.profil!.role === "caissier" || req.profil!.role === "technicien";
 
-    let requeteVentes = supabase
-      .from("sales").select("pole, total, cout_total, created_at, statut, vendeur_id")
+    let qVentes = supabase
+      .from("sales").select("establishment_id, total, cout_total, created_at, statut, vendeur_id")
       .gte("created_at", debut.toISOString()).lt("created_at", fin.toISOString())
       .eq("statut", "validee");
-    if (restreint) requeteVentes = requeteVentes.eq("vendeur_id", req.profil!.id);
+    qVentes = filtrerEtablissement(qVentes, portee.id);
+    if (restreint) qVentes = qVentes.eq("vendeur_id", req.profil!.id);
 
-    const [{ data: ventes }, { data: depenses }, { data: sessions }, alertes] = await Promise.all([
-      requeteVentes,
-      // Les dépenses ne concernent pas les profils restreints : requête évitée.
+    let qDepenses = supabase.from("expenses").select("establishment_id, montant, date_depense")
+      .gte("date_depense", debutJour).lte("date_depense", finJour);
+    qDepenses = filtrerEtablissement(qDepenses, portee.id);
+
+    let qSessions = supabase.from("cash_sessions").select("*").eq("statut", "ouverte");
+    qSessions = filtrerEtablissement(qSessions, portee.id);
+
+    let qAlertes = supabase.from("products").select("id, nom, quantite, seuil_alerte")
+      .eq("actif", true).eq("gere_stock", true);
+    qAlertes = filtrerEtablissement(qAlertes, portee.id);
+
+    const [{ data: ventes }, depensesRes, { data: sessions }, alertes, etabs] = await Promise.all([
+      qVentes,
       restreint
-        ? Promise.resolve({ data: [] as { pole: string; montant: number; date_depense: string }[] })
-        : supabase.from("expenses").select("pole, montant, date_depense, valide_par")
-            .gte("date_depense", debutJour)
-            .lte("date_depense", finJour),
-      supabase.from("cash_sessions").select("*").eq("statut", "ouverte"),
-      supabase.from("products").select("id, nom, quantite, seuil_alerte")
-        .eq("actif", true).eq("gere_stock", true),
+        ? Promise.resolve({ data: [] as { establishment_id: number; montant: number; date_depense: string }[] })
+        : qDepenses,
+      qSessions,
+      qAlertes,
+      nomsEtablissements(),
     ]);
 
     const lignesVentes = ventes ?? [];
-    const caMultiServices = lignesVentes
-      .filter((v) => v.pole === "MULTI_SERVICES").reduce((s, v) => s + Number(v.total), 0);
-    const caFood = lignesVentes
-      .filter((v) => v.pole === "FOOD").reduce((s, v) => s + Number(v.total), 0);
-    const cout = lignesVentes.reduce((s, v) => s + Number(v.cout_total), 0);
-    const totalDepenses = (depenses ?? []).reduce((s, d) => s + Number(d.montant), 0);
-    const margeBrute = caMultiServices + caFood - cout;
+    const depenses = depensesRes.data ?? [];
 
-    // Série journalière pour le graphique.
-    const parJour = new Map<string, { caMultiServices: number; caFood: number; depenses: number }>();
+    // --- Agrégation par établissement, jamais fondue ---
+    const concernes = portee.id === null
+      ? [...etabs.values()].filter((e) => e.actif)
+      : [etabs.get(portee.id)].filter(Boolean) as EtabResume[];
+
+    const parEtablissement: LigneEtablissement[] = concernes.map((e) => {
+      const v = lignesVentes.filter((x) => x.establishment_id === e.id);
+      const ca = v.reduce((s, x) => s + Number(x.total), 0);
+      const cout = v.reduce((s, x) => s + Number(x.cout_total), 0);
+      const dep = depenses.filter((d) => d.establishment_id === e.id)
+        .reduce((s, d) => s + Number(d.montant), 0);
+      return {
+        establishmentId: e.id, nom: e.nom, couleur: e.couleur,
+        ca, cout, marge: ca - cout, nbVentes: v.length,
+        depenses: restreint ? 0 : dep,
+        resultat: restreint ? 0 : ca - cout - dep,
+      };
+    });
+
+    const ca = parEtablissement.reduce((s, e) => s + e.ca, 0);
+    const cout = parEtablissement.reduce((s, e) => s + e.cout, 0);
+    const totalDepenses = depenses.reduce((s, d) => s + Number(d.montant), 0);
+    const margeBrute = ca - cout;
+
+    // --- Série journalière, une valeur par établissement ---
+    const parJour = new Map<string, { depenses: number; valeurs: Record<string, number> }>();
     const initJour = (cle: string) => {
-      if (!parJour.has(cle)) parJour.set(cle, { caMultiServices: 0, caFood: 0, depenses: 0 });
+      if (!parJour.has(cle)) parJour.set(cle, { depenses: 0, valeurs: {} });
       return parJour.get(cle)!;
     };
     for (const v of lignesVentes) {
-      const cle = jourLocal(new Date(v.created_at));
-      const jour = initJour(cle);
-      if (v.pole === "MULTI_SERVICES") jour.caMultiServices += Number(v.total);
-      else jour.caFood += Number(v.total);
+      const jour = initJour(jourLocal(new Date(v.created_at)));
+      const cle = String(v.establishment_id);
+      jour.valeurs[cle] = (jour.valeurs[cle] ?? 0) + Number(v.total);
     }
-    for (const d of depenses ?? []) {
+    for (const d of depenses) {
       initJour(String(d.date_depense).slice(0, 10)).depenses += Number(d.montant);
     }
 
     const noms = await nomsEmployes();
-    // Un profil restreint rattaché à un pôle ne voit que la caisse de ce pôle ;
-    // celui qui intervient sur les deux (pole null) les voit toutes.
-    const sessionsVisibles = (sessions ?? []).filter(
-      (s) => !restreint || !req.profil!.pole || s.pole === req.profil!.pole
-    );
     const caisses = await Promise.all(
-      sessionsVisibles.map(async (s) => ({
-        pole: s.pole as Pole,
+      (sessions ?? []).map(async (s) => ({
+        establishmentId: s.establishment_id as number,
+        etablissementNom: etabs.get(s.establishment_id)?.nom ?? "—",
         sessionId: s.id,
         ouvertePar: noms.get(s.opened_by) ?? "—",
         ouverteA: s.opened_at,
@@ -1570,16 +1813,16 @@ export function createApiApp() {
 
     const stats: DashboardStats = {
       restreint,
-      caMultiServices,
-      caFood,
-      caTotal: caMultiServices + caFood,
+      etablissementId: portee.id,
+      etablissementNom: await nomEtablissement(portee.id),
+      ca,
       nbVentes: lignesVentes.length,
       // Marge, dépenses et bénéfice ne sont pas seulement masqués à l'écran :
-      // ils ne quittent pas le serveur pour un profil restreint. Une valeur
-      // envoyée puis cachée reste lisible dans la réponse réseau.
+      // ils ne quittent pas le serveur pour un profil restreint.
       depenses: restreint ? 0 : totalDepenses,
       margeBrute: restreint ? 0 : margeBrute,
       beneficeEstimatif: restreint ? 0 : margeBrute - totalDepenses,
+      parEtablissement,
       caisses,
       ruptures: produits.filter((p) => p.quantite <= 0),
       bientotEnRupture: produits.filter((p) => p.quantite > 0 && p.quantite <= p.seuilAlerte),
@@ -1591,34 +1834,47 @@ export function createApiApp() {
   }));
 
   // -------------------------------------------------------------------------
-  // §5.12 Rapports et statistiques — §5.13 Comptabilité
+  // §5.12 Rapports — §5.13 Comptabilité
   // -------------------------------------------------------------------------
 
   api.get("/reports", requireRole(...VALIDENT), route(async (req, res) => {
-    const { debut, fin, debutJour, finJour, libelle } = bornesPeriode(
-      req.query as Record<string, unknown>
-    );
+    const { debut, fin, debutJour, finJour, libelle } =
+      bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
     const debutISO = debut.toISOString();
     const finISO = fin.toISOString();
 
-    const [{ data: ventes }, { data: depenses }, { data: achats }, { data: sessions }] =
-      await Promise.all([
-        supabase.from("sales")
-          .select("id, pole, total, cout_total, vendeur_id, payment_method, statut")
-          .gte("created_at", debutISO).lt("created_at", finISO).eq("statut", "validee"),
-        supabase.from("expenses").select("categorie, montant")
-          .gte("date_depense", debutJour).lte("date_depense", finJour),
-        supabase.from("purchases").select("montant_total, montant_paye, montant_restant")
-          .gte("date_achat", debutJour).lte("date_achat", finJour),
-        supabase.from("cash_sessions").select("*").eq("statut", "fermee")
-          .gte("closed_at", debutISO).lt("closed_at", finISO),
-      ]);
+    let qVentes = supabase.from("sales")
+      .select("id, establishment_id, total, cout_total, vendeur_id, payment_method")
+      .gte("created_at", debutISO).lt("created_at", finISO).eq("statut", "validee");
+    qVentes = filtrerEtablissement(qVentes, portee.id);
+
+    let qDepenses = supabase.from("expenses").select("establishment_id, categorie, montant")
+      .gte("date_depense", debutJour).lte("date_depense", finJour);
+    qDepenses = filtrerEtablissement(qDepenses, portee.id);
+
+    let qAchats = supabase.from("purchases")
+      .select("montant_total, montant_paye, montant_restant")
+      .gte("date_achat", debutJour).lte("date_achat", finJour);
+    qAchats = filtrerEtablissement(qAchats, portee.id);
+
+    let qSessions = supabase.from("cash_sessions").select("*").eq("statut", "fermee")
+      .gte("closed_at", debutISO).lt("closed_at", finISO);
+    qSessions = filtrerEtablissement(qSessions, portee.id);
+
+    const [{ data: ventes }, { data: depenses }, { data: achats }, { data: sessions }, etabs] =
+      await Promise.all([qVentes, qDepenses, qAchats, qSessions, nomsEtablissements()]);
 
     const lignesVentes = ventes ?? [];
     const idsVentes = lignesVentes.map((v) => v.id);
 
-    // Détail produit : chargé par lots, PostgREST limitant la taille des filtres `in`.
-    const detail: { libelle: string; quantite: number; montant: number; prix_achat_unitaire: number; sale_id: number }[] = [];
+    // Détail produit chargé par lots : PostgREST limite la taille des filtres `in`.
+    const detail: {
+      libelle: string; quantite: number; montant: number;
+      prix_achat_unitaire: number; sale_id: number;
+    }[] = [];
     for (let i = 0; i < idsVentes.length; i += 200) {
       const { data } = await supabase
         .from("sale_items")
@@ -1627,35 +1883,46 @@ export function createApiApp() {
       detail.push(...((data ?? []) as typeof detail));
     }
 
-    const poleParVente = new Map(lignesVentes.map((v) => [v.id, v.pole as Pole]));
+    const etabParVente = new Map(lignesVentes.map((v) => [v.id, v.establishment_id as number]));
     const noms = await nomsEmployes();
     const { data: profils } = await supabase.from("profiles").select("id, full_name, role");
     const roleParId = new Map((profils ?? []).map((p) => [p.id, p.role as UserRole]));
 
-    // --- CA par pôle
-    const caParPole = (["MULTI_SERVICES", "FOOD"] as Pole[]).map((pole) => {
-      const duPole = lignesVentes.filter((v) => v.pole === pole);
-      const ca = duPole.reduce((s, v) => s + Number(v.total), 0);
-      const cout = duPole.reduce((s, v) => s + Number(v.cout_total), 0);
-      return { pole, ca, cout, marge: ca - cout, nbVentes: duPole.length };
+    // --- Par établissement
+    const concernes = portee.id === null
+      ? [...etabs.values()].filter((e) => e.actif)
+      : [etabs.get(portee.id)].filter(Boolean) as EtabResume[];
+
+    const parEtablissement: LigneEtablissement[] = concernes.map((e) => {
+      const v = lignesVentes.filter((x) => x.establishment_id === e.id);
+      const ca = v.reduce((s, x) => s + Number(x.total), 0);
+      const cout = v.reduce((s, x) => s + Number(x.cout_total), 0);
+      const dep = (depenses ?? []).filter((d) => d.establishment_id === e.id)
+        .reduce((s, d) => s + Number(d.montant), 0);
+      return {
+        establishmentId: e.id, nom: e.nom, couleur: e.couleur,
+        ca, cout, marge: ca - cout, nbVentes: v.length, depenses: dep,
+        resultat: ca - cout - dep,
+      };
     });
 
-    // --- CA par produit
-    const parProduit = new Map<string, { pole: Pole; quantite: number; ca: number; marge: number }>();
+    // --- Par produit
+    const parProduit = new Map<string, { etablissement: string; quantite: number; ca: number; marge: number }>();
     for (const l of detail) {
-      const pole = poleParVente.get(l.sale_id) ?? "MULTI_SERVICES";
-      const cle = l.libelle;
-      const acc = parProduit.get(cle) ?? { pole, quantite: 0, ca: 0, marge: 0 };
+      const etabId = etabParVente.get(l.sale_id);
+      const nomEtab = etabId ? etabs.get(etabId)?.nom ?? "—" : "—";
+      const cle = `${l.libelle} ${nomEtab}`;
+      const acc = parProduit.get(cle) ?? { etablissement: nomEtab, quantite: 0, ca: 0, marge: 0 };
       acc.quantite += Number(l.quantite);
       acc.ca += Number(l.montant);
       acc.marge += Number(l.montant) - Number(l.prix_achat_unitaire) * Number(l.quantite);
       parProduit.set(cle, acc);
     }
     const caParProduit = [...parProduit.entries()]
-      .map(([produit, v]) => ({ produit, ...v }))
+      .map(([cle, v]) => ({ produit: cle.split(" ")[0], ...v }))
       .sort((a, b) => b.ca - a.ca);
 
-    // --- CA par employé
+    // --- Par employé
     const parEmploye = new Map<string, { nbVentes: number; ca: number }>();
     for (const v of lignesVentes) {
       const acc = parEmploye.get(v.vendeur_id) ?? { nbVentes: 0, ca: 0 };
@@ -1671,7 +1938,7 @@ export function createApiApp() {
       }))
       .sort((a, b) => b.ca - a.ca);
 
-    // --- CA par mode de paiement
+    // --- Par mode de paiement
     const parPaiement = new Map<PaymentMethod, { montant: number; nbVentes: number }>();
     for (const v of lignesVentes) {
       const cle = v.payment_method as PaymentMethod;
@@ -1697,7 +1964,8 @@ export function createApiApp() {
 
     const rapport: ReportData = {
       periode: { debut: debutISO, fin: finISO, libelle },
-      caParPole,
+      etablissement: { id: portee.id, nom: await nomEtablissement(portee.id) },
+      parEtablissement,
       caParProduit,
       caParEmploye,
       caParPaiement: [...parPaiement.entries()].map(([methode, v]) => ({ methode, ...v })),
@@ -1725,7 +1993,7 @@ export function createApiApp() {
         .map(({ produit, quantite, ca }) => ({ produit, quantite, ca })),
       ecartsCaisse: (sessions ?? []).map((s) => ({
         sessionId: s.id,
-        pole: s.pole as Pole,
+        etablissement: etabs.get(s.establishment_id)?.nom ?? "—",
         date: s.closed_at,
         theorique: Number(s.solde_theorique ?? 0),
         physique: Number(s.solde_physique ?? 0),
@@ -1737,7 +2005,7 @@ export function createApiApp() {
   }));
 
   // -------------------------------------------------------------------------
-  // §5.10 Journal de traçabilité
+  // §5.10 Journal — commun à tous les établissements
   // -------------------------------------------------------------------------
 
   api.get("/audit", requireRole(...VALIDENT), route(async (req, res) => {
@@ -1773,8 +2041,7 @@ export function createApiApp() {
 
   app.use("/api", api);
 
-  // Gestionnaire d'erreurs : le détail va aux logs serveur, le client reçoit un
-  // message exploitable sans fuite d'information technique.
+  // Le détail va aux logs serveur, le client reçoit un message exploitable.
   app.use((err: Error, _req: express.Request, res: Response, _next: express.NextFunction) => {
     console.error("[api]", err);
     res.status(500).json({ error: err.message || "Erreur interne du serveur." });

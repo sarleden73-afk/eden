@@ -3,7 +3,7 @@ import { Package, Plus, Pencil, Search, Layers, Tag, FileDown, Lock } from "luci
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide,
+  Badge, Modale, Tableau, Vide, BandeauChoisirEtablissement,
 } from "../components/ui";
 import {
   getProduits, getPacks, getCategories, getFournisseurs,
@@ -12,18 +12,23 @@ import {
 import { fcfa, quantite as fmtQuantite } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
-import { POLE_SHORT, type Product, type Pack, type Category, type Supplier, type Pole } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { useEtablissement } from "../contexts/EtablissementContext";
+import type { Product, Pack, Category, Supplier } from "../types";
 
 type Onglet = "produits" | "packs" | "categories";
 
 /**
- * §2, §3 Catalogue. La consultation est ouverte à tous (le caissier doit voir
- * les tarifs), la modification est réservée à l'administrateur (§5.1
- * « Modification des prix ») et journalisée (§5.10).
+ * §2, §3 Catalogue.
+ *
+ * Chaque établissement a son propre catalogue : les articles de la papeterie
+ * n'apparaissent pas au restaurant, et inversement. La consultation est ouverte
+ * à tous (le caissier doit voir les tarifs), la modification est réservée à
+ * l'administrateur (§5.1) et journalisée (§5.10).
  */
 export default function Catalogue() {
   const { peut } = useAuth();
+  const { selection, libelle, pourEcriture, nomDe } = useEtablissement();
   const modifiable = peut("admin");
 
   const [onglet, setOnglet] = useState<Onglet>("produits");
@@ -35,7 +40,6 @@ export default function Catalogue() {
   const [erreur, setErreur] = useState<string | null>(null);
 
   const [recherche, setRecherche] = useState("");
-  const [filtrePole, setFiltrePole] = useState<Pole | "">("");
   const [produitEdite, setProduitEdite] = useState<Product | "nouveau" | null>(null);
   const [packEdite, setPackEdite] = useState<Pack | "nouveau" | null>(null);
   const [categorieNouvelle, setCategorieNouvelle] = useState(false);
@@ -44,7 +48,9 @@ export default function Catalogue() {
     setChargement(true);
     try {
       const [p, pk, c] = await Promise.all([
-        getProduits({ tous: true }), getPacks(), getCategories(),
+        getProduits(selection, { tous: true }),
+        getPacks(selection),
+        getCategories(selection),
       ]);
       setProduits(p); setPacks(pk); setCategories(c);
       // Les fournisseurs ne sont listés que pour les profils qui y ont droit.
@@ -55,23 +61,21 @@ export default function Catalogue() {
     } finally {
       setChargement(false);
     }
-  }, [peut]);
+  }, [peut, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
   const produitsFiltres = useMemo(() => {
     const terme = recherche.trim().toLowerCase();
-    return produits.filter(
-      (p) => (!filtrePole || p.pole === filtrePole) && (!terme || p.nom.toLowerCase().includes(terme))
-    );
-  }, [produits, recherche, filtrePole]);
+    return produits.filter((p) => !terme || p.nom.toLowerCase().includes(terme));
+  }, [produits, recherche]);
 
   const exporter = () =>
     exporterCSV(
       "catalogue-eden",
-      ["Article", "Catégorie", "Pôle", "Type", "Prix de vente", "Prix d'achat", "Marge", "Stock", "Seuil", "Actif"],
+      ["Article", "Catégorie", "Établissement", "Type", "Prix de vente", "Prix d'achat", "Marge", "Stock", "Seuil", "Actif"],
       produitsFiltres.map((p) => [
-        p.nom, p.categorieNom ?? "", POLE_SHORT[p.pole],
+        p.nom, p.categorieNom ?? "", nomDe(p.establishmentId),
         p.kind === "produit" ? "Produit" : "Prestation",
         p.prixVente, p.prixAchat, p.prixVente - p.prixAchat,
         p.gereStock ? p.quantite : "", p.gereStock ? p.seuilAlerte : "",
@@ -85,27 +89,33 @@ export default function Catalogue() {
     { cle: "categories", label: "Catégories", icone: Tag, nb: categories.length },
   ];
 
+  // En vue consolidée on peut tout consulter, mais pas créer : un article
+  // appartient à un établissement, encore faut-il savoir lequel.
+  const creationPossible = modifiable && pourEcriture !== null;
+
   return (
     <Layout>
-      <PageHeader titre="Catalogue" sousTitre="Articles, prestations, packs et catégories">
+      <PageHeader titre="Catalogue" sousTitre={`${libelle} — articles, prestations, packs et catégories`}>
         {!modifiable && (
-          <Badge ton="neutre">
-            <Lock className="inline h-3 w-3 mr-1" />Consultation seule
-          </Badge>
+          <Badge ton="neutre"><Lock className="inline h-3 w-3 mr-1" />Consultation seule</Badge>
         )}
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter}>Excel</Bouton>
-        {modifiable && onglet === "produits" && (
+        {creationPossible && onglet === "produits" && (
           <Bouton icone={Plus} onClick={() => setProduitEdite("nouveau")}>Nouvel article</Bouton>
         )}
-        {modifiable && onglet === "packs" && (
+        {creationPossible && onglet === "packs" && (
           <Bouton icone={Plus} onClick={() => setPackEdite("nouveau")}>Nouveau pack</Bouton>
         )}
-        {modifiable && onglet === "categories" && (
+        {creationPossible && onglet === "categories" && (
           <Bouton icone={Plus} onClick={() => setCategorieNouvelle(true)}>Nouvelle catégorie</Bouton>
         )}
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      {modifiable && pourEcriture === null && (
+        <BandeauChoisirEtablissement action="créer un article, un pack ou une catégorie" />
+      )}
 
       <div className="flex gap-1 mb-5 border-b border-gray-200 overflow-x-auto">
         {onglets.map((o) => (
@@ -130,39 +140,32 @@ export default function Catalogue() {
         <Chargement />
       ) : onglet === "produits" ? (
         <>
-          <div className="flex flex-wrap gap-2 mb-4">
-            <div className="relative flex-1 min-w-[220px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <Saisie
-                value={recherche} onChange={(e) => setRecherche(e.target.value)}
-                placeholder="Rechercher un article…" className="pl-9"
-              />
-            </div>
-            <Liste value={filtrePole} onChange={(e) => setFiltrePole(e.target.value as Pole | "")} className="w-auto">
-              <option value="">Tous les pôles</option>
-              <option value="MULTI_SERVICES">Multi-Services</option>
-              <option value="FOOD">Food</option>
-            </Liste>
+          <div className="relative mb-4">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Saisie
+              value={recherche} onChange={(e) => setRecherche(e.target.value)}
+              placeholder="Rechercher un article…" className="pl-9"
+            />
           </div>
 
           <Card>
             {produitsFiltres.length === 0 ? (
               <Vide titre="Aucun article ne correspond" icone={Package} />
             ) : (
-              <Tableau entetes={["Article", "Catégorie", "Pôle", " Prix vente", " Prix achat", " Marge", " Stock", ""]}>
+              <Tableau
+                entetes={["Article", "Catégorie", "Établissement", " Prix vente", " Prix achat", " Marge", " Stock", ""]}
+              >
                 {produitsFiltres.map((p) => {
                   const marge = p.prixVente - p.prixAchat;
                   return (
                     <tr key={p.id} className={cn("hover:bg-gray-50", !p.actif && "opacity-50")}>
                       <td className="px-4 py-3">
                         <div className="font-medium text-gray-900">{p.nom}</div>
-                        {p.kind === "prestation" && (
-                          <span className="text-xs text-gray-500">Prestation</span>
-                        )}
+                        {p.kind === "prestation" && <span className="text-xs text-gray-500">Prestation</span>}
                         {!p.actif && <Badge ton="neutre">Retiré</Badge>}
                       </td>
                       <td className="px-4 py-3 text-gray-600">{p.categorieNom ?? "—"}</td>
-                      <td className="px-4 py-3 text-gray-600">{POLE_SHORT[p.pole]}</td>
+                      <td className="px-4 py-3 text-gray-600">{nomDe(p.establishmentId)}</td>
                       <td className="px-4 py-3 text-right tabulaire font-medium text-amber-600 whitespace-nowrap">
                         {fcfa(p.prixVente)}
                       </td>
@@ -225,7 +228,7 @@ export default function Catalogue() {
                           {!p.actif && <Badge ton="neutre">Retiré</Badge>}
                         </div>
                         <p className="mt-1 text-sm text-gray-500">
-                          {(p.items ?? []).length} article(s) — {POLE_SHORT[p.pole]}
+                          {(p.items ?? []).length} article(s) — {nomDe(p.establishmentId)}
                         </p>
                       </div>
                       <div className="flex items-center gap-3">
@@ -274,15 +277,15 @@ export default function Catalogue() {
         </Card>
       ) : (
         <Card>
-          <Tableau entetes={["Catégorie", "Pôle", "Type", "Ordre"]}>
+          <Tableau entetes={["Catégorie", "Établissement", "Type", " Ordre"]}>
             {categories.map((c) => (
               <tr key={c.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium text-gray-900">{c.nom}</td>
-                <td className="px-4 py-3 text-gray-600">{POLE_SHORT[c.pole]}</td>
+                <td className="px-4 py-3 text-gray-600">{nomDe(c.establishmentId)}</td>
                 <td className="px-4 py-3 text-gray-600">
                   {c.kind === "produit" ? "Produits" : "Prestations"}
                 </td>
-                <td className="px-4 py-3 text-gray-500 tabulaire">{c.ordre}</td>
+                <td className="px-4 py-3 text-right text-gray-500 tabulaire">{c.ordre}</td>
               </tr>
             ))}
           </Tableau>
@@ -293,17 +296,22 @@ export default function Catalogue() {
         cible={produitEdite}
         categories={categories}
         fournisseurs={fournisseurs}
+        etablissementId={pourEcriture}
+        libelleEtablissement={libelle}
         onFermer={() => setProduitEdite(null)}
         onSucces={() => { setProduitEdite(null); void recharger(); }}
       />
       <ModalePack
         cible={packEdite}
         produits={produits.filter((p) => p.actif)}
+        etablissementId={pourEcriture}
         onFermer={() => setPackEdite(null)}
         onSucces={() => { setPackEdite(null); void recharger(); }}
       />
       <ModaleCategorie
         ouverte={categorieNouvelle}
+        etablissementId={pourEcriture}
+        libelleEtablissement={libelle}
         onFermer={() => setCategorieNouvelle(false)}
         onSucces={() => { setCategorieNouvelle(false); void recharger(); }}
       />
@@ -314,11 +322,13 @@ export default function Catalogue() {
 // ---------------------------------------------------------------------------
 
 function ModaleProduit({
-  cible, categories, fournisseurs, onFermer, onSucces,
+  cible, categories, fournisseurs, etablissementId, libelleEtablissement, onFermer, onSucces,
 }: {
   cible: Product | "nouveau" | null;
   categories: Category[];
   fournisseurs: Supplier[];
+  etablissementId: number | null;
+  libelleEtablissement: string;
   onFermer: () => void;
   onSucces: () => void;
 }) {
@@ -326,9 +336,8 @@ function ModaleProduit({
   const produit = nouveau ? null : cible;
 
   const [form, setForm] = useState({
-    nom: "", pole: "MULTI_SERVICES" as Pole, kind: "produit",
-    categoryId: "", prixVente: "", prixAchat: "", unite: "unité",
-    gereStock: true, seuilAlerte: "0", supplierId: "", actif: true, motif: "",
+    nom: "", kind: "produit", categoryId: "", prixVente: "", prixAchat: "",
+    unite: "unité", gereStock: true, seuilAlerte: "0", supplierId: "", actif: true, motif: "",
   });
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
@@ -339,7 +348,7 @@ function ModaleProduit({
     setForm(
       produit
         ? {
-            nom: produit.nom, pole: produit.pole, kind: produit.kind,
+            nom: produit.nom, kind: produit.kind,
             categoryId: produit.categoryId ? String(produit.categoryId) : "",
             prixVente: String(produit.prixVente), prixAchat: String(produit.prixAchat),
             unite: produit.unite, gereStock: produit.gereStock,
@@ -348,9 +357,8 @@ function ModaleProduit({
             actif: produit.actif, motif: "",
           }
         : {
-            nom: "", pole: "MULTI_SERVICES", kind: "produit", categoryId: "",
-            prixVente: "", prixAchat: "", unite: "unité", gereStock: true,
-            seuilAlerte: "0", supplierId: "", actif: true, motif: "",
+            nom: "", kind: "produit", categoryId: "", prixVente: "", prixAchat: "",
+            unite: "unité", gereStock: true, seuilAlerte: "0", supplierId: "", actif: true, motif: "",
           }
     );
   }, [cible, produit]);
@@ -368,7 +376,6 @@ function ModaleProduit({
     try {
       const corps = {
         nom: form.nom.trim(),
-        pole: form.pole,
         kind: form.kind as "produit" | "prestation",
         categoryId: form.categoryId ? Number(form.categoryId) : null,
         prixVente: Number(form.prixVente) || 0,
@@ -379,8 +386,13 @@ function ModaleProduit({
         supplierId: form.supplierId ? Number(form.supplierId) : null,
         actif: form.actif,
       };
-      if (produit) await modifierProduit(produit.id, { ...corps, motif: form.motif.trim() || undefined });
-      else await creerProduit(corps);
+      if (produit) {
+        await modifierProduit(produit.id, { ...corps, motif: form.motif.trim() || undefined });
+      } else {
+        // L'établissement n'est pas modifiable après coup : des ventes et des
+        // mouvements de stock y renvoient.
+        await creerProduit({ ...corps, establishmentId: etablissementId as number });
+      }
       onSucces();
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Enregistrement impossible.");
@@ -389,7 +401,6 @@ function ModaleProduit({
     }
   };
 
-  const categoriesDuPole = categories.filter((c) => c.pole === form.pole);
   const marge = (Number(form.prixVente) || 0) - (Number(form.prixAchat) || 0);
 
   return (
@@ -408,20 +419,14 @@ function ModaleProduit({
           </Champ>
         </div>
 
-        <Champ label="Pôle">
-          <Liste
-            value={form.pole}
-            onChange={(e) => setForm({ ...form, pole: e.target.value as Pole, categoryId: "" })}
-          >
-            <option value="MULTI_SERVICES">EDEN MULTI-SERVICES</option>
-            <option value="FOOD">EDEN FOOD</option>
-          </Liste>
+        <Champ label="Établissement" aide="Défini par le sélecteur, en haut du menu.">
+          <Saisie value={libelleEtablissement} disabled />
         </Champ>
 
         <Champ label="Catégorie">
           <Liste value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })}>
             <option value="">Sans catégorie</option>
-            {categoriesDuPole.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.nom}</option>)}
           </Liste>
         </Champ>
 
@@ -531,10 +536,11 @@ function ModaleProduit({
 }
 
 function ModalePack({
-  cible, produits, onFermer, onSucces,
+  cible, produits, etablissementId, onFermer, onSucces,
 }: {
   cible: Pack | "nouveau" | null;
   produits: Product[];
+  etablissementId: number | null;
   onFermer: () => void;
   onSucces: () => void;
 }) {
@@ -568,8 +574,12 @@ function ModalePack({
     (s, c) => s + (parId.get(c.productId)?.prixVente ?? 0) * c.quantite, 0
   );
 
+  // On ne propose que les articles de l'établissement du pack : composer un
+  // pack scolaire avec des sandwichs n'aurait aucun sens.
+  const etabDuPack = pack?.establishmentId ?? etablissementId;
   const resultats = recherche.trim()
     ? produits
+        .filter((p) => p.establishmentId === etabDuPack)
         .filter((p) => p.nom.toLowerCase().includes(recherche.trim().toLowerCase()))
         .filter((p) => !composition.some((c) => c.productId === p.id))
         .slice(0, 8)
@@ -581,11 +591,10 @@ function ModalePack({
     try {
       const corps = {
         nom: nom.trim(), prixVente: Number(prix) || 0,
-        description: description.trim() || null, actif,
-        pole: "MULTI_SERVICES" as Pole, items: composition,
+        description: description.trim() || null, actif, items: composition,
       };
       if (pack) await modifierPack(pack.id, corps);
-      else await creerPack(corps);
+      else await creerPack({ ...corps, establishmentId: etablissementId as number });
       onSucces();
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Enregistrement impossible.");
@@ -652,7 +661,9 @@ function ModalePack({
               const p = parId.get(c.productId);
               return (
                 <div key={c.productId} className="flex items-center gap-3 p-2.5 bg-gray-50 rounded-lg">
-                  <span className="flex-1 text-sm text-gray-900 truncate">{p?.nom ?? `Article ${c.productId}`}</span>
+                  <span className="flex-1 text-sm text-gray-900 truncate">
+                    {p?.nom ?? `Article ${c.productId}`}
+                  </span>
                   <Saisie
                     type="number" min={1} value={c.quantite}
                     onChange={(e) =>
@@ -683,7 +694,10 @@ function ModalePack({
             {Number(prix) > 0 && valeurDetail > 0 && (
               <div className="flex justify-between items-baseline text-sm">
                 <span className="text-gray-600">Avantage client</span>
-                <span className={cn("tabulaire font-medium", valeurDetail >= Number(prix) ? "text-green-700" : "text-red-700")}>
+                <span className={cn(
+                  "tabulaire font-medium",
+                  valeurDetail >= Number(prix) ? "text-green-700" : "text-red-700"
+                )}>
                   {fcfa(valeurDetail - Number(prix))}
                 </span>
               </div>
@@ -711,10 +725,15 @@ function ModalePack({
 }
 
 function ModaleCategorie({
-  ouverte, onFermer, onSucces,
-}: { ouverte: boolean; onFermer: () => void; onSucces: () => void }) {
+  ouverte, etablissementId, libelleEtablissement, onFermer, onSucces,
+}: {
+  ouverte: boolean;
+  etablissementId: number | null;
+  libelleEtablissement: string;
+  onFermer: () => void;
+  onSucces: () => void;
+}) {
   const [nom, setNom] = useState("");
-  const [pole, setPole] = useState<Pole>("MULTI_SERVICES");
   const [kind, setKind] = useState("produit");
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
@@ -723,7 +742,11 @@ function ModaleCategorie({
     setEnvoi(true);
     setErreur(null);
     try {
-      await creerCategorie({ nom: nom.trim(), pole, kind: kind as "produit" | "prestation" });
+      await creerCategorie({
+        nom: nom.trim(),
+        establishmentId: etablissementId as number,
+        kind: kind as "produit" | "prestation",
+      });
       setNom("");
       onSucces();
     } catch (e) {
@@ -740,11 +763,8 @@ function ModaleCategorie({
         <Champ label="Nom de la catégorie">
           <Saisie value={nom} onChange={(e) => setNom(e.target.value)} autoFocus />
         </Champ>
-        <Champ label="Pôle">
-          <Liste value={pole} onChange={(e) => setPole(e.target.value as Pole)}>
-            <option value="MULTI_SERVICES">EDEN MULTI-SERVICES</option>
-            <option value="FOOD">EDEN FOOD</option>
-          </Liste>
+        <Champ label="Établissement" aide="Défini par le sélecteur, en haut du menu.">
+          <Saisie value={libelleEtablissement} disabled />
         </Champ>
         <Champ label="Type">
           <Liste value={kind} onChange={(e) => setKind(e.target.value)}>

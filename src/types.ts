@@ -3,7 +3,6 @@
 // conversion est faite par src/lib/caseConvert.ts aux frontières de l'API.
 
 export type UserRole = "admin" | "responsable" | "caissier" | "technicien";
-export type Pole = "MULTI_SERVICES" | "FOOD";
 export type PaymentMethod = "especes" | "mobile_money" | "carte" | "virement" | "autre";
 export type SaleStatus = "validee" | "annulee";
 export type OrderStatus = "en_attente" | "en_cours" | "termine" | "livre" | "annule";
@@ -17,21 +16,38 @@ export type ExpenseCategory =
   | "fournitures_bureau" | "autre";
 export type ItemKind = "produit" | "prestation";
 
+/**
+ * Établissement de l'entreprise (papeterie, restaurant…).
+ *
+ * Chaque écriture — vente, caisse, stock, achat, dépense, commande — appartient
+ * à un et un seul établissement. Ils ne sont jamais additionnés implicitement :
+ * la vue consolidée est un choix explicite du propriétaire.
+ */
+export interface Establishment {
+  id: number;
+  nom: string;
+  slug: string;
+  activite: string | null;
+  adresse: string | null;
+  telephone: string | null;
+  email: string | null;
+  /** Couleur d'accent, pour repérer d'un coup d'œil où l'on travaille. */
+  couleur: string;
+  ordre: number;
+  actif: boolean;
+}
+
+/**
+ * Sélection courante dans l'interface : un établissement précis, ou la vue
+ * consolidée. `"tous"` n'est proposé qu'aux profils qui y ont droit.
+ */
+export type SelectionEtablissement = number | "tous";
+
 // --- Libellés d'affichage --------------------------------------------------
 // Centralisés ici pour que l'API (rapports, exports) et l'UI ne divergent pas.
 
-export const POLE_LABELS: Record<Pole, string> = {
-  MULTI_SERVICES: "EDEN MULTI-SERVICES",
-  FOOD: "EDEN FOOD",
-};
-
-export const POLE_SHORT: Record<Pole, string> = {
-  MULTI_SERVICES: "Multi-Services",
-  FOOD: "Food",
-};
-
 export const ROLE_LABELS: Record<UserRole, string> = {
-  admin: "Administrateur",
+  admin: "Propriétaire",
   responsable: "Responsable",
   caissier: "Caissier / Agent",
   technicien: "Technicien",
@@ -78,6 +94,9 @@ export const CASH_MOVEMENT_LABELS: Record<CashMovementType, string> = {
   autre: "Autre",
 };
 
+/** Les rôles autorisés à changer d'établissement (§5.1). */
+export const ROLES_MULTI_ETABLISSEMENTS: UserRole[] = ["admin", "responsable"];
+
 // --- Entités ---------------------------------------------------------------
 
 export interface Profile {
@@ -85,7 +104,9 @@ export interface Profile {
   fullName: string;
   email: string;
   role: UserRole;
-  pole: Pole | null;
+  /** null = accès à tous les établissements (propriétaire, responsable transversal). */
+  establishmentId: number | null;
+  etablissementNom?: string | null;
   poste: string | null;
   telephone: string | null;
   salaire: number | null;
@@ -108,7 +129,7 @@ export interface Supplier {
 export interface Category {
   id: number;
   nom: string;
-  pole: Pole;
+  establishmentId: number;
   kind: ItemKind;
   ordre: number;
   actif: boolean;
@@ -120,7 +141,7 @@ export interface Product {
   description: string | null;
   categoryId: number | null;
   categorieNom?: string;
-  pole: Pole;
+  establishmentId: number;
   kind: ItemKind;
   prixVente: number;
   prixAchat: number;
@@ -145,12 +166,13 @@ export interface Pack {
   id: number;
   nom: string;
   description: string | null;
-  pole: Pole;
+  establishmentId: number;
   prixVente: number;
   actif: boolean;
   items?: PackItem[];
 }
 
+/** Les clients sont communs à tous les établissements (§5.9). */
 export interface Customer {
   id: number;
   nom: string;
@@ -158,14 +180,14 @@ export interface Customer {
   adresse: string | null;
   notes: string | null;
   createdAt: string;
-  // Agrégats renvoyés par GET /api/customers/:id (§5.9)
   totalDepense?: number;
   nbAchats?: number;
 }
 
 export interface CashSession {
   id: number;
-  pole: Pole;
+  establishmentId: number;
+  etablissementNom?: string;
   statut: CashSessionStatus;
   fondsInitial: number;
   openedBy: string;
@@ -209,7 +231,8 @@ export interface SaleItem {
 export interface Sale {
   id: number;
   numeroRecu: string;
-  pole: Pole;
+  establishmentId: number;
+  etablissementNom?: string;
   sessionId: number | null;
   customerId: number | null;
   customerNom?: string;
@@ -260,7 +283,8 @@ export interface Purchase {
   numero: string;
   supplierId: number | null;
   fournisseurNom?: string;
-  pole: Pole;
+  establishmentId: number;
+  etablissementNom?: string;
   dateAchat: string;
   montantTotal: number;
   montantPaye: number;
@@ -276,7 +300,8 @@ export interface Purchase {
 
 export interface Expense {
   id: number;
-  pole: Pole;
+  establishmentId: number;
+  etablissementNom?: string;
   categorie: ExpenseCategory;
   montant: number;
   motif: string;
@@ -295,6 +320,7 @@ export interface Expense {
 export interface Order {
   id: number;
   numero: string;
+  establishmentId: number;
   customerId: number | null;
   customerNom: string;
   customerTelephone: string | null;
@@ -313,6 +339,7 @@ export interface Order {
   createdAt: string;
 }
 
+/** Le journal de traçabilité est commun à tous les établissements (§5.10). */
 export interface AuditEntry {
   id: number;
   userId: string | null;
@@ -343,6 +370,19 @@ export interface CaisseSettings {
 
 // --- Tableau de bord et rapports (§5.11, §5.12) ----------------------------
 
+/** Chiffres d'un établissement sur la période. */
+export interface LigneEtablissement {
+  establishmentId: number;
+  nom: string;
+  couleur: string;
+  ca: number;
+  cout: number;
+  marge: number;
+  nbVentes: number;
+  depenses: number;
+  resultat: number;
+}
+
 export interface DashboardStats {
   /**
    * Vrai pour les rôles à consultation limitée (§5.1 : caissier, technicien).
@@ -350,18 +390,23 @@ export interface DashboardStats {
    * bénéfice ne sont pas transmis.
    */
   restreint: boolean;
-  /** CA par pôle + total (§5.11). */
-  caMultiServices: number;
-  caFood: number;
-  caTotal: number;
+  /** Établissement affiché ; null = vue consolidée, choisie explicitement. */
+  etablissementId: number | null;
+  /** Nom de l'établissement affiché, ou « Tous les établissements ». */
+  etablissementNom: string;
+  ca: number;
   nbVentes: number;
   depenses: number;
-  /** §5.11 « Bénéfice estimatif » = marge brute − dépenses validées. */
   margeBrute: number;
   beneficeEstimatif: number;
-  /** État des caisses ouvertes, par pôle. */
+  /**
+   * Détail par établissement. Une seule ligne quand un établissement est
+   * sélectionné ; toutes en vue consolidée — jamais fondues ensemble.
+   */
+  parEtablissement: LigneEtablissement[];
   caisses: {
-    pole: Pole;
+    establishmentId: number;
+    etablissementNom: string;
     sessionId: number;
     ouvertePar: string;
     ouverteA: string;
@@ -369,14 +414,19 @@ export interface DashboardStats {
   }[];
   ruptures: { id: number; nom: string; quantite: number; seuilAlerte: number }[];
   bientotEnRupture: { id: number; nom: string; quantite: number; seuilAlerte: number }[];
-  /** Série journalière pour le graphique, sur la période demandée. */
-  serie: { date: string; caMultiServices: number; caFood: number; depenses: number }[];
+  /**
+   * Série journalière. `valeurs` est indexé par identifiant d'établissement
+   * (en chaîne), ce qui permet au graphique de tracer une barre par
+   * établissement sans connaître leur nombre à l'avance.
+   */
+  serie: { date: string; depenses: number; valeurs: Record<string, number> }[];
 }
 
 export interface ReportData {
   periode: { debut: string; fin: string; libelle: string };
-  caParPole: { pole: Pole; ca: number; cout: number; marge: number; nbVentes: number }[];
-  caParProduit: { produit: string; pole: Pole; quantite: number; ca: number; marge: number }[];
+  etablissement: { id: number | null; nom: string };
+  parEtablissement: LigneEtablissement[];
+  caParProduit: { produit: string; etablissement: string; quantite: number; ca: number; marge: number }[];
   caParEmploye: { employe: string; role: UserRole; nbVentes: number; ca: number }[];
   caParPaiement: { methode: PaymentMethod; montant: number; nbVentes: number }[];
   depensesParCategorie: { categorie: ExpenseCategory; montant: number; nb: number }[];
@@ -390,12 +440,11 @@ export interface ReportData {
     nbVentes: number;
     panierMoyen: number;
   };
-  /** §5.12 « Produits les plus/moins vendus » — dérivés de caParProduit. */
   meilleuresVentes: { produit: string; quantite: number; ca: number }[];
   faiblesVentes: { produit: string; quantite: number; ca: number }[];
   ecartsCaisse: {
     sessionId: number;
-    pole: Pole;
+    etablissement: string;
     date: string;
     theorique: number;
     physique: number;

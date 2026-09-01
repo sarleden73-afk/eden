@@ -11,7 +11,8 @@ import { getProduits, getMouvementsStock, ajusterStock } from "../services/db";
 import { fcfa, quantite as fmtQuantite, dateHeure } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
-import { POLE_SHORT, type Product, type StockMovement, type Pole } from "../types";
+import type { Product, StockMovement } from "../types";
+import { useEtablissement } from "../contexts/EtablissementContext";
 import { useAuth } from "../contexts/AuthContext";
 
 type Onglet = "etat" | "mouvements";
@@ -19,6 +20,7 @@ type Onglet = "etat" | "mouvements";
 /** §5.5 Gestion des stocks : état, alertes, inventaire et historique. */
 export default function Stocks() {
   const { peut } = useAuth();
+  const { selection, libelle, nomDe } = useEtablissement();
   const peutAjuster = peut("admin", "responsable");
 
   const [onglet, setOnglet] = useState<Onglet>("etat");
@@ -28,14 +30,14 @@ export default function Stocks() {
   const [erreur, setErreur] = useState<string | null>(null);
 
   const [recherche, setRecherche] = useState("");
-  const [filtrePole, setFiltrePole] = useState<Pole | "">("");
+
   const [filtreAlerte, setFiltreAlerte] = useState<"" | "rupture" | "bas">("");
   const [aAjuster, setAAjuster] = useState<Product | null>(null);
 
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      const [p, m] = await Promise.all([getProduits({}), getMouvementsStock()]);
+      const [p, m] = await Promise.all([getProduits(selection), getMouvementsStock(selection)]);
       // Seuls les articles réellement suivis ont leur place ici.
       setProduits(p.filter((x) => x.gereStock));
       setMouvements(m);
@@ -45,7 +47,7 @@ export default function Stocks() {
     } finally {
       setChargement(false);
     }
-  }, []);
+  }, [selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -58,20 +60,20 @@ export default function Stocks() {
   const affiches = useMemo(() => {
     const terme = recherche.trim().toLowerCase();
     return produits.filter((p) => {
-      if (filtrePole && p.pole !== filtrePole) return false;
+
       if (terme && !p.nom.toLowerCase().includes(terme)) return false;
       if (filtreAlerte === "rupture" && p.quantite > 0) return false;
       if (filtreAlerte === "bas" && !(p.quantite > 0 && p.quantite <= p.seuilAlerte)) return false;
       return true;
     });
-  }, [produits, recherche, filtrePole, filtreAlerte]);
+  }, [produits, recherche, filtreAlerte]);
 
   const exporter = () =>
     exporterCSV(
       "stocks-eden",
       ["Article", "Catégorie", "Pôle", "Quantité", "Unité", "Seuil d'alerte", "Prix d'achat", "Valeur du stock", "État"],
       affiches.map((p) => [
-        p.nom, p.categorieNom ?? "", POLE_SHORT[p.pole], p.quantite, p.unite,
+        p.nom, p.categorieNom ?? "", nomDe(p.establishmentId), p.quantite, p.unite,
         p.seuilAlerte, p.prixAchat, p.quantite * p.prixAchat,
         p.quantite <= 0 ? "Rupture" : p.quantite <= p.seuilAlerte ? "Stock bas" : "Normal",
       ])
@@ -79,7 +81,7 @@ export default function Stocks() {
 
   return (
     <Layout>
-      <PageHeader titre="Stocks" sousTitre="État, alertes, inventaire et mouvements">
+      <PageHeader titre="Stocks" sousTitre={`${libelle} — état, alertes, inventaire et mouvements`}>
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!affiches.length}>
           Excel
         </Bouton>
@@ -134,11 +136,6 @@ export default function Stocks() {
                 placeholder="Rechercher un article…" className="pl-9"
               />
             </div>
-            <Liste value={filtrePole} onChange={(e) => setFiltrePole(e.target.value as Pole | "")} className="w-auto">
-              <option value="">Tous les pôles</option>
-              <option value="MULTI_SERVICES">Multi-Services</option>
-              <option value="FOOD">Food</option>
-            </Liste>
             <Liste
               value={filtreAlerte}
               onChange={(e) => setFiltreAlerte(e.target.value as "" | "rupture" | "bas")}
@@ -170,7 +167,7 @@ export default function Stocks() {
                         <div className="font-medium text-gray-900">{p.nom}</div>
                         <div className="text-xs text-gray-500">{p.categorieNom ?? "—"}</div>
                       </td>
-                      <td className="px-4 py-3 text-gray-600">{POLE_SHORT[p.pole]}</td>
+                      <td className="px-4 py-3 text-gray-600">{nomDe(p.establishmentId)}</td>
                       <td className="px-4 py-3 text-right tabulaire font-medium whitespace-nowrap">
                         <span className={cn(rupture && "text-red-600", bas && "text-amber-600")}>
                           {fmtQuantite(p.quantite)}

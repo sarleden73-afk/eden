@@ -10,6 +10,7 @@ import { fcfa, dateCourte, aujourdhui } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { ORDER_STATUS_LABELS, type Order, type OrderStatus, type Profile } from "../types";
+import { useEtablissement } from "../contexts/EtablissementContext";
 
 const TONS_STATUT: Record<OrderStatus, "neutre" | "info" | "succes" | "alerte" | "danger"> = {
   en_attente: "alerte",
@@ -21,6 +22,7 @@ const TONS_STATUT: Record<OrderStatus, "neutre" | "info" | "succes" | "alerte" |
 
 /** §5.8 Gestion des commandes infographie. */
 export default function Commandes() {
+  const { selection, libelle, pourEcriture } = useEtablissement();
   const [commandes, setCommandes] = useState<Order[]>([]);
   const [techniciens, setTechniciens] = useState<Profile[]>([]);
   const [filtre, setFiltre] = useState<OrderStatus | "">("");
@@ -31,7 +33,7 @@ export default function Commandes() {
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setCommandes(await getCommandes(filtre || undefined));
+      setCommandes(await getCommandes(selection, filtre || undefined));
       // La liste des utilisateurs sert à assigner un technicien.
       setTechniciens(await getUtilisateurs().catch(() => []));
       setErreur(null);
@@ -40,7 +42,7 @@ export default function Commandes() {
     } finally {
       setChargement(false);
     }
-  }, [filtre]);
+  }, [filtre, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -66,7 +68,7 @@ export default function Commandes() {
 
   return (
     <Layout>
-      <PageHeader titre="Commandes" sousTitre="Prestations infographie et cyber sur commande">
+      <PageHeader titre="Commandes" sousTitre={`${libelle} — prestations sur commande`}>
         <Liste value={filtre} onChange={(e) => setFiltre(e.target.value as OrderStatus | "")} className="w-auto py-1.5">
           <option value="">Tous les statuts</option>
           {Object.entries(ORDER_STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -74,7 +76,7 @@ export default function Commandes() {
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!commandes.length}>
           Excel
         </Bouton>
-        <Bouton icone={Plus} onClick={() => setEdite("nouveau")}>Nouvelle commande</Bouton>
+        <Bouton icone={Plus} onClick={() => setEdite("nouveau")} disabled={pourEcriture === null} title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}>Nouvelle commande</Bouton>
       </PageHeader>
 
       <Erreur message={erreur} />
@@ -162,7 +164,7 @@ export default function Commandes() {
       </Card>
 
       <ModaleCommande
-        cible={edite} techniciens={techniciens}
+        cible={edite} techniciens={techniciens} etablissementId={pourEcriture}
         onFermer={() => setEdite(null)}
         onSucces={() => { setEdite(null); void recharger(); }}
       />
@@ -173,10 +175,11 @@ export default function Commandes() {
 // ---------------------------------------------------------------------------
 
 function ModaleCommande({
-  cible, techniciens, onFermer, onSucces,
+  cible, techniciens, etablissementId, onFermer, onSucces,
 }: {
   cible: Order | "nouveau" | null;
   techniciens: Profile[];
+  etablissementId: number | null;
   onFermer: () => void;
   onSucces: () => void;
 }) {
@@ -237,7 +240,7 @@ function ModaleCommande({
         technicienId: form.technicienId || null,
       };
       if (commande) await modifierCommande(commande.id, { ...base, statut: form.statut });
-      else await creerCommande(base);
+      else await creerCommande({ ...base, establishmentId: etablissementId as number });
       onSucces();
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Enregistrement impossible.");

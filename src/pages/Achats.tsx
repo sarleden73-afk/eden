@@ -14,15 +14,17 @@ import {
 import { fcfa, dateCourte, quantite as fmtQuantite, aujourdhui } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
+import { useEtablissement } from "../contexts/EtablissementContext";
 import {
-  PAYMENT_LABELS, POLE_SHORT,
-  type Purchase, type Supplier, type Product, type Pole, type PeriodKey,
+  PAYMENT_LABELS,
+  type Purchase, type Supplier, type Product, type PeriodKey,
 } from "../types";
 
 type Onglet = "achats" | "fournisseurs";
 
 /** §5.6 Achats et fournisseurs. */
 export default function Achats() {
+  const { selection, libelle, pourEcriture } = useEtablissement();
   const [onglet, setOnglet] = useState<Onglet>("achats");
   const [periode, setPeriode] = useState<PeriodKey>("mois");
   const [debut, setDebut] = useState(aujourdhui());
@@ -43,7 +45,7 @@ export default function Achats() {
     setChargement(true);
     try {
       const [a, f, p] = await Promise.all([
-        getAchats(periode, { debut, fin }), getFournisseurs(), getProduits({}),
+        getAchats(periode, { debut, fin, etablissement: selection }), getFournisseurs(), getProduits(selection),
       ]);
       setAchats(a); setFournisseurs(f); setProduits(p);
       setErreur(null);
@@ -52,7 +54,7 @@ export default function Achats() {
     } finally {
       setChargement(false);
     }
-  }, [periode, debut, fin]);
+  }, [periode, debut, fin, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -62,9 +64,9 @@ export default function Achats() {
   const exporter = () =>
     exporterCSV(
       "achats-eden",
-      ["N°", "Date", "Fournisseur", "Pôle", "Montant total", "Payé", "Restant dû", "Paiement", "Par", "Justificatif"],
+      ["N°", "Date", "Fournisseur", "Établissement", "Montant total", "Payé", "Restant dû", "Paiement", "Par", "Justificatif"],
       achats.map((a) => [
-        a.numero, dateCourte(a.dateAchat), a.fournisseurNom ?? "", POLE_SHORT[a.pole],
+        a.numero, dateCourte(a.dateAchat), a.fournisseurNom ?? "", a.etablissementNom ?? "—",
         a.montantTotal, a.montantPaye, a.montantRestant,
         PAYMENT_LABELS[a.paymentMethod], a.effectueParNom ?? "", a.justificatif ?? "",
       ])
@@ -72,7 +74,7 @@ export default function Achats() {
 
   return (
     <Layout>
-      <PageHeader titre="Achats et fournisseurs" sousTitre="Approvisionnements, règlements et dettes fournisseurs">
+      <PageHeader titre="Achats et fournisseurs" sousTitre={`${libelle} — approvisionnements, règlements et dettes`}>
         {onglet === "achats" && (
           <>
             <SelecteurPeriode
@@ -82,7 +84,7 @@ export default function Achats() {
             <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!achats.length}>
               Excel
             </Bouton>
-            <Bouton icone={Plus} onClick={() => setNouvelAchat(true)}>Nouvel achat</Bouton>
+            <Bouton icone={Plus} onClick={() => setNouvelAchat(true)} disabled={pourEcriture === null} title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}>Nouvel achat</Bouton>
           </>
         )}
         {onglet === "fournisseurs" && (
@@ -132,13 +134,13 @@ export default function Achats() {
               description="Enregistrez vos approvisionnements pour alimenter le stock et suivre vos dettes fournisseurs."
             />
           ) : (
-            <Tableau entetes={["N°", "Date", "Fournisseur", "Pôle", " Total", " Restant dû", "Par", ""]}>
+            <Tableau entetes={["N°", "Date", "Fournisseur", "Établissement", " Total", " Restant dû", "Par", ""]}>
               {achats.map((a) => (
                 <tr key={a.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{a.numero}</td>
                   <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(a.dateAchat)}</td>
                   <td className="px-4 py-3 text-gray-700">{a.fournisseurNom ?? "—"}</td>
-                  <td className="px-4 py-3 text-gray-600">{POLE_SHORT[a.pole]}</td>
+                  <td className="px-4 py-3 text-gray-600">{a.etablissementNom ?? "—"}</td>
                   <td className="px-4 py-3 text-right tabulaire font-medium whitespace-nowrap">{fcfa(a.montantTotal)}</td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     {a.montantRestant > 0
@@ -235,8 +237,8 @@ function ModaleAchat({
   ouverte: boolean; fournisseurs: Supplier[]; produits: Product[];
   onFermer: () => void; onSucces: () => void;
 }) {
+  const { pourEcriture, libelle } = useEtablissement();
   const [supplierId, setSupplierId] = useState("");
-  const [pole, setPole] = useState<Pole>("MULTI_SERVICES");
   const [dateAchat, setDateAchat] = useState(aujourdhui());
   const [paiement, setPaiement] = useState("especes");
   const [montantPaye, setMontantPaye] = useState("");
@@ -249,7 +251,7 @@ function ModaleAchat({
 
   useEffect(() => {
     if (!ouverte) return;
-    setSupplierId(""); setPole("MULTI_SERVICES"); setDateAchat(aujourdhui());
+    setSupplierId(""); setDateAchat(aujourdhui());
     setPaiement("especes"); setMontantPaye(""); setJustificatif(""); setNotes("");
     setLignes([]); setRecherche(""); setErreur(null);
   }, [ouverte]);
@@ -260,7 +262,7 @@ function ModaleAchat({
 
   const resultats = recherche.trim()
     ? produits
-        .filter((p) => p.pole === pole && p.nom.toLowerCase().includes(recherche.trim().toLowerCase()))
+        .filter((p) => p.nom.toLowerCase().includes(recherche.trim().toLowerCase()))
         .slice(0, 8)
     : [];
 
@@ -286,7 +288,8 @@ function ModaleAchat({
     try {
       await creerAchat({
         supplierId: supplierId ? Number(supplierId) : null,
-        pole, dateAchat,
+        establishmentId: pourEcriture as number,
+        dateAchat,
         montantPaye: Number(montantPaye) || 0,
         paymentMethod: paiement,
         justificatif: justificatif.trim() || undefined,
@@ -323,11 +326,8 @@ function ModaleAchat({
             ))}
           </Liste>
         </Champ>
-        <Champ label="Pôle">
-          <Liste value={pole} onChange={(e) => { setPole(e.target.value as Pole); setLignes([]); }}>
-            <option value="MULTI_SERVICES">EDEN MULTI-SERVICES</option>
-            <option value="FOOD">EDEN FOOD</option>
-          </Liste>
+        <Champ label="Établissement" aide="Défini par le sélecteur, en haut du menu.">
+          <Saisie value={libelle} disabled />
         </Champ>
         <Champ label="Date d'achat">
           <Saisie type="date" value={dateAchat} onChange={(e) => setDateAchat(e.target.value)} />
@@ -468,7 +468,7 @@ function ModaleDetailAchat({ achat, onFermer }: { achat: Purchase | null; onFerm
       <div className="grid grid-cols-2 gap-3 text-sm mb-4">
         <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{dateCourte(achat.dateAchat)}</p></div>
         <div><p className="text-xs text-gray-500">Fournisseur</p><p className="font-medium">{achat.fournisseurNom ?? "—"}</p></div>
-        <div><p className="text-xs text-gray-500">Pôle</p><p className="font-medium">{POLE_SHORT[achat.pole]}</p></div>
+        <div><p className="text-xs text-gray-500">Établissement</p><p className="font-medium">{achat.etablissementNom ?? "—"}</p></div>
         <div><p className="text-xs text-gray-500">Paiement</p><p className="font-medium">{PAYMENT_LABELS[achat.paymentMethod]}</p></div>
         {achat.justificatif && (
           <div className="col-span-2">

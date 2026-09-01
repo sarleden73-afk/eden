@@ -8,7 +8,8 @@ import { getRapport } from "../services/db";
 import { fcfa, nombre, aujourdhui } from "../lib/format";
 import { exporterCSV, exporterPDF } from "../lib/export";
 import { cn } from "../lib/utils";
-import { EXPENSE_LABELS, POLE_LABELS, type ReportData, type PeriodKey } from "../types";
+import { EXPENSE_LABELS, type ReportData, type PeriodKey } from "../types";
+import { useEtablissement } from "../contexts/EtablissementContext";
 
 /**
  * §5.13 Comptabilité / suivi financier.
@@ -16,6 +17,7 @@ import { EXPENSE_LABELS, POLE_LABELS, type ReportData, type PeriodKey } from "..
  *   Chiffre d'affaires → Coût des marchandises → Marge brute → Dépenses → Résultat.
  */
 export default function Comptabilite() {
+  const { selection, libelle } = useEtablissement();
   const [periode, setPeriode] = useState<PeriodKey>("mois");
   const [debut, setDebut] = useState(aujourdhui());
   const [fin, setFin] = useState(aujourdhui());
@@ -26,14 +28,14 @@ export default function Comptabilite() {
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setRapport(await getRapport(periode, { debut, fin }));
+      setRapport(await getRapport(periode, { debut, fin, etablissement: selection }));
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
     } finally {
       setChargement(false);
     }
-  }, [periode, debut, fin]);
+  }, [periode, debut, fin, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -65,7 +67,7 @@ export default function Comptabilite() {
 
   return (
     <Layout>
-      <PageHeader titre="Comptabilité" sousTitre={`Compte de résultat simplifié — ${rapport?.periode.libelle ?? ""}`}>
+      <PageHeader titre="Comptabilité" sousTitre={`${libelle} — compte de résultat simplifié, ${rapport?.periode.libelle ?? ""}`}>
         <SelecteurPeriode
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
@@ -140,16 +142,16 @@ export default function Comptabilite() {
           {/* --- Résultat par pôle --- */}
           <Card>
             <div className="px-5 py-4 border-b border-gray-200">
-              <h2 className="font-semibold text-gray-900">Résultat par pôle</h2>
+              <h2 className="font-semibold text-gray-900">Résultat par établissement</h2>
               <p className="text-sm text-gray-500 mt-0.5">
                 Les dépenses ne sont pas réparties ici : elles apparaissent au niveau consolidé,
-                chaque dépense étant déjà rattachée à son pôle à la saisie.
+                chaque dépense étant déjà rattachée à son établissement à la saisie.
               </p>
             </div>
-            <Tableau entetes={["Pôle", " Ventes", " CA", " Coût marchandises", " Marge brute", " Taux"]}>
-              {rapport.caParPole.map((p) => (
-                <tr key={p.pole} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{POLE_LABELS[p.pole]}</td>
+            <Tableau entetes={["Établissement", " Ventes", " CA", " Coût marchandises", " Marge brute", " Taux"]}>
+              {rapport.parEtablissement.map((p) => (
+                <tr key={p.establishmentId} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900">{p.nom}</td>
                   <td className="px-4 py-3 text-right tabulaire">{nombre(p.nbVentes)}</td>
                   <td className="px-4 py-3 text-right tabulaire font-medium">{fcfa(p.ca)}</td>
                   <td className="px-4 py-3 text-right tabulaire text-gray-600">{fcfa(p.cout)}</td>

@@ -1,26 +1,28 @@
 import { useCallback, useEffect, useState } from "react";
-import { ReceiptText, Ban, Eye, FileDown, Store, UtensilsCrossed } from "lucide-react";
+import { ReceiptText, Ban, Eye, FileDown } from "lucide-react";
 import Layout from "../components/Layout";
 import {
-  PageHeader, Card, Bouton, Liste, Zone, Champ, Erreur, Chargement,
+  PageHeader, Card, Bouton, Zone, Champ, Erreur, Chargement,
   Badge, Modale, Tableau, Vide, SelecteurPeriode,
 } from "../components/ui";
 import { getVentes, getVente, annulerVente } from "../services/db";
 import { fcfa, dateHeure, quantite as fmtQuantite, aujourdhui } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import {
-  PAYMENT_LABELS, POLE_SHORT,
-  type Sale, type Pole, type PeriodKey,
+  PAYMENT_LABELS,
+  type Sale, type PeriodKey,
 } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { useEtablissement } from "../contexts/EtablissementContext";
 
 /** §5.2 Historique des ventes — qui a vendu quoi, à quel prix, à quelle heure. */
 export default function Ventes() {
   const { peut } = useAuth();
+  const { selection, libelle } = useEtablissement();
   const [periode, setPeriode] = useState<PeriodKey>("jour");
   const [debut, setDebut] = useState(aujourdhui());
   const [fin, setFin] = useState(aujourdhui());
-  const [pole, setPole] = useState<Pole | "">("");
+
   const [ventes, setVentes] = useState<Sale[]>([]);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -31,14 +33,14 @@ export default function Ventes() {
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setVentes(await getVentes(periode, { debut, fin, pole }));
+      setVentes(await getVentes(periode, { debut, fin, etablissement: selection }));
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
     } finally {
       setChargement(false);
     }
-  }, [periode, debut, fin, pole]);
+  }, [periode, debut, fin, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -48,9 +50,9 @@ export default function Ventes() {
   const exporter = () => {
     exporterCSV(
       "ventes-eden",
-      ["N° reçu", "Date et heure", "Pôle", "Vendeur", "Paiement", "Sous-total", "Remise", "Total", "Statut", "Motif annulation"],
+      ["N° reçu", "Date et heure", "Établissement", "Vendeur", "Paiement", "Sous-total", "Remise", "Total", "Statut", "Motif annulation"],
       ventes.map((v) => [
-        v.numeroRecu, dateHeure(v.createdAt), POLE_SHORT[v.pole], v.vendeurNom ?? "",
+        v.numeroRecu, dateHeure(v.createdAt), v.etablissementNom ?? "—", v.vendeurNom ?? "",
         PAYMENT_LABELS[v.paymentMethod], v.sousTotal, v.remise, v.total,
         v.statut === "validee" ? "Validée" : "Annulée", v.motifAnnulation ?? "",
       ])
@@ -61,17 +63,12 @@ export default function Ventes() {
     <Layout>
       <PageHeader
         titre="Ventes"
-        sousTitre={`${validees.length} vente(s) validée(s) — ${fcfa(total)}`}
+        sousTitre={`${libelle} — ${validees.length} vente(s) validée(s), ${fcfa(total)}`}
       >
         <SelecteurPeriode
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Liste value={pole} onChange={(e) => setPole(e.target.value as Pole | "")} className="w-auto py-1.5">
-          <option value="">Tous les pôles</option>
-          <option value="MULTI_SERVICES">Multi-Services</option>
-          <option value="FOOD">Food</option>
-        </Liste>
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!ventes.length}>
           Excel
         </Bouton>
@@ -86,21 +83,16 @@ export default function Ventes() {
           <Vide
             icone={ReceiptText}
             titre="Aucune vente sur cette période"
-            description="Changez la période ou le pôle pour élargir la recherche."
+            description="Changez la période, ou l'établissement dans le sélecteur."
           />
         ) : (
-          <Tableau entetes={["N° reçu", "Date", "Pôle", "Vendeur", "Paiement", " Total", "Statut", ""]}>
+          <Tableau entetes={["N° reçu", "Date", "Établissement", "Vendeur", "Paiement", " Total", "Statut", ""]}>
             {ventes.map((v) => (
               <tr key={v.id} className={v.statut === "annulee" ? "bg-red-50/40" : "hover:bg-gray-50"}>
                 <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{v.numeroRecu}</td>
                 <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateHeure(v.createdAt)}</td>
                 <td className="px-4 py-3">
-                  <span className="inline-flex items-center gap-1.5 text-gray-700">
-                    {v.pole === "MULTI_SERVICES"
-                      ? <Store className="h-3.5 w-3.5 text-gray-400" />
-                      : <UtensilsCrossed className="h-3.5 w-3.5 text-gray-400" />}
-                    {POLE_SHORT[v.pole]}
-                  </span>
+                  <span className="text-gray-700">{v.etablissementNom ?? "—"}</span>
                 </td>
                 <td className="px-4 py-3 text-gray-700">{v.vendeurNom ?? "—"}</td>
                 <td className="px-4 py-3 text-gray-500">{PAYMENT_LABELS[v.paymentMethod]}</td>
@@ -146,7 +138,7 @@ export default function Ventes() {
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <Info label="Date" valeur={dateHeure(detail.createdAt)} />
-              <Info label="Pôle" valeur={POLE_SHORT[detail.pole]} />
+              <Info label="Établissement" valeur={detail.etablissementNom ?? "—"} />
               <Info label="Vendeur" valeur={detail.vendeurNom ?? "—"} />
               <Info label="Paiement" valeur={PAYMENT_LABELS[detail.paymentMethod]} />
               {detail.numeroTransaction && <Info label="N° transaction" valeur={detail.numeroTransaction} />}

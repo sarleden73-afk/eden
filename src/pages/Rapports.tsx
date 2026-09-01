@@ -16,8 +16,9 @@ import { getRapport } from "../services/db";
 import { fcfa, nombre, dateCourte, aujourdhui } from "../lib/format";
 import { exporterCSV, exporterPDF } from "../lib/export";
 import { cn } from "../lib/utils";
+import { useEtablissement } from "../contexts/EtablissementContext";
 import {
-  EXPENSE_LABELS, PAYMENT_LABELS, POLE_LABELS, POLE_SHORT, ROLE_LABELS,
+  EXPENSE_LABELS, PAYMENT_LABELS, ROLE_LABELS,
   type ReportData, type PeriodKey,
 } from "../types";
 
@@ -25,6 +26,7 @@ const COULEURS = ["#1fa066", "#d4a017", "#45bd83", "#b8860b", "#7bd7a8", "#c0525
 
 /** §5.12 Rapports et statistiques. */
 export default function Rapports() {
+  const { selection, libelle } = useEtablissement();
   const [periode, setPeriode] = useState<PeriodKey>("mois");
   const [debut, setDebut] = useState(aujourdhui());
   const [fin, setFin] = useState(aujourdhui());
@@ -35,14 +37,14 @@ export default function Rapports() {
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setRapport(await getRapport(periode, { debut, fin }));
+      setRapport(await getRapport(periode, { debut, fin, etablissement: selection }));
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
     } finally {
       setChargement(false);
     }
-  }, [periode, debut, fin]);
+  }, [periode, debut, fin, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
 
@@ -55,17 +57,17 @@ export default function Rapports() {
       lignes.push([titre], entetes, ...donnees, []);
     };
 
-    section("CHIFFRE D'AFFAIRES PAR POLE",
-      ["Pôle", "CA", "Coût marchandises", "Marge", "Nb ventes"],
-      rapport.caParPole.map((p) => [POLE_LABELS[p.pole], p.ca, p.cout, p.marge, p.nbVentes]));
+    section("CHIFFRE D AFFAIRES PAR ETABLISSEMENT",
+      ["Établissement", "CA", "Coût marchandises", "Marge", "Nb ventes"],
+      rapport.parEtablissement.map((p) => [p.nom, p.ca, p.cout, p.marge, p.nbVentes]));
 
     section("CHIFFRE D'AFFAIRES PAR EMPLOYE",
       ["Employé", "Rôle", "Nb ventes", "CA"],
       rapport.caParEmploye.map((e) => [e.employe, ROLE_LABELS[e.role], e.nbVentes, e.ca]));
 
     section("CHIFFRE D'AFFAIRES PAR PRODUIT",
-      ["Produit", "Pôle", "Quantité vendue", "CA", "Marge"],
-      rapport.caParProduit.map((p) => [p.produit, POLE_SHORT[p.pole], p.quantite, p.ca, p.marge]));
+      ["Produit", "Établissement", "Quantité vendue", "CA", "Marge"],
+      rapport.caParProduit.map((p) => [p.produit, p.etablissement, p.quantite, p.ca, p.marge]));
 
     section("MODES DE PAIEMENT",
       ["Mode", "Montant", "Nb ventes"],
@@ -76,9 +78,9 @@ export default function Rapports() {
       rapport.depensesParCategorie.map((d) => [EXPENSE_LABELS[d.categorie], d.montant, d.nb]));
 
     section("ECARTS DE CAISSE",
-      ["Date", "Pôle", "Responsable", "Théorique", "Physique", "Écart"],
+      ["Date", "Établissement", "Responsable", "Théorique", "Physique", "Écart"],
       rapport.ecartsCaisse.map((e) => [
-        dateCourte(e.date), POLE_SHORT[e.pole], e.responsable, e.theorique, e.physique, e.ecart,
+        dateCourte(e.date), e.etablissement, e.responsable, e.theorique, e.physique, e.ecart,
       ]));
 
     section("SYNTHESE",
@@ -95,12 +97,12 @@ export default function Rapports() {
         ["Achats — restant dû", rapport.achats.restant],
       ]);
 
-    exporterCSV("rapport-eden", ["EDEN MULTI-SERVICES — " + rapport.periode.libelle], lignes);
+    exporterCSV("rapport-eden", [`${libelle} — ${rapport.periode.libelle}`], lignes);
   };
 
   return (
     <Layout>
-      <PageHeader titre="Rapports et statistiques" sousTitre={rapport?.periode.libelle}>
+      <PageHeader titre="Rapports et statistiques" sousTitre={`${libelle} — ${rapport?.periode.libelle ?? ""}`}>
         <SelecteurPeriode
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
@@ -145,12 +147,12 @@ export default function Rapports() {
           {/* --- CA par pôle --- */}
           <Card>
             <div className="px-5 py-4 border-b border-gray-200">
-              <h2 className="font-semibold text-gray-900">Chiffre d'affaires par pôle</h2>
+              <h2 className="font-semibold text-gray-900">Chiffre d'affaires par établissement</h2>
             </div>
-            <Tableau entetes={["Pôle", " Nb ventes", " CA", " Coût marchandises", " Marge", " Taux de marge"]}>
-              {rapport.caParPole.map((p) => (
-                <tr key={p.pole} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{POLE_LABELS[p.pole]}</td>
+            <Tableau entetes={["Établissement", " Nb ventes", " CA", " Coût marchandises", " Marge", " Taux de marge"]}>
+              {rapport.parEtablissement.map((p) => (
+                <tr key={p.establishmentId} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 font-medium text-gray-900">{p.nom}</td>
                   <td className="px-4 py-3 text-right tabulaire">{nombre(p.nbVentes)}</td>
                   <td className="px-4 py-3 text-right tabulaire font-medium">{fcfa(p.ca)}</td>
                   <td className="px-4 py-3 text-right tabulaire text-gray-600">{fcfa(p.cout)}</td>
@@ -286,11 +288,11 @@ export default function Rapports() {
             {rapport.caParProduit.length === 0 ? (
               <Vide titre="Aucune vente sur la période" icone={Package} />
             ) : (
-              <Tableau entetes={["Article", "Pôle", " Quantité", " CA", " Marge"]}>
+              <Tableau entetes={["Article", "Établissement", " Quantité", " CA", " Marge"]}>
                 {rapport.caParProduit.slice(0, 60).map((p) => (
                   <tr key={p.produit} className="hover:bg-gray-50">
                     <td className="px-4 py-3 text-gray-900">{p.produit}</td>
-                    <td className="px-4 py-3 text-gray-600">{POLE_SHORT[p.pole]}</td>
+                    <td className="px-4 py-3 text-gray-600">{p.etablissement}</td>
                     <td className="px-4 py-3 text-right tabulaire">{nombre(p.quantite)}</td>
                     <td className="px-4 py-3 text-right tabulaire font-medium">{fcfa(p.ca)}</td>
                     <td className={cn("px-4 py-3 text-right tabulaire", p.marge >= 0 ? "text-green-700" : "text-red-700")}>
@@ -337,11 +339,11 @@ export default function Rapports() {
               {rapport.ecartsCaisse.length === 0 ? (
                 <Vide titre="Aucune caisse fermée sur la période" icone={Scale} />
               ) : (
-                <Tableau entetes={["Date", "Pôle", "Responsable", " Écart"]}>
+                <Tableau entetes={["Date", "Établissement", "Responsable", " Écart"]}>
                   {rapport.ecartsCaisse.map((e) => (
                     <tr key={e.sessionId} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(e.date)}</td>
-                      <td className="px-4 py-3 text-gray-600">{POLE_SHORT[e.pole]}</td>
+                      <td className="px-4 py-3 text-gray-600">{e.etablissement}</td>
                       <td className="px-4 py-3 text-gray-700">{e.responsable}</td>
                       <td className="px-4 py-3 text-right">
                         <Badge ton={!e.ecart ? "succes" : Math.abs(e.ecart) < 500 ? "alerte" : "danger"}>

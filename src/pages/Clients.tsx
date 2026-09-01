@@ -8,12 +8,14 @@ import {
 import { getClients, getClient, creerClient, modifierClient } from "../services/db";
 import { fcfa, dateCourte, dateHeure } from "../lib/format";
 import { exporterCSV } from "../lib/export";
-import { ORDER_STATUS_LABELS, POLE_SHORT, type Customer, type Sale, type Order } from "../types";
+import { ORDER_STATUS_LABELS, type Customer, type Sale, type Order } from "../types";
+import { useEtablissement } from "../contexts/EtablissementContext";
 
 type FicheClient = Customer & { ventes: Sale[]; commandes: Order[] };
 
 /** §5.9 Gestion des clients : fiche, historique d'achats, commandes en cours. */
 export default function Clients() {
+  const { selection } = useEtablissement();
   const [clients, setClients] = useState<Customer[]>([]);
   const [recherche, setRecherche] = useState("");
   const [chargement, setChargement] = useState(true);
@@ -41,7 +43,7 @@ export default function Clients() {
 
   const ouvrirFiche = async (id: number) => {
     try {
-      setFiche(await getClient(id));
+      setFiche(await getClient(id, selection));
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Fiche inaccessible.");
     }
@@ -196,12 +198,12 @@ function ModaleFiche({ fiche, onFermer }: { fiche: FicheClient | null; onFermer:
       {fiche.ventes.length === 0 ? (
         <p className="text-sm text-gray-500 py-4 text-center">Aucun achat enregistré pour ce client.</p>
       ) : (
-        <Tableau entetes={["N° reçu", "Date", "Pôle", "Vendeur", " Total", "Statut"]}>
+        <Tableau entetes={["N° reçu", "Date", "Établissement", "Vendeur", " Total", "Statut"]}>
           {fiche.ventes.map((v) => (
             <tr key={v.id}>
               <td className="px-4 py-2.5 font-medium text-gray-900">{v.numeroRecu}</td>
               <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{dateHeure(v.createdAt)}</td>
-              <td className="px-4 py-2.5 text-gray-600">{POLE_SHORT[v.pole]}</td>
+              <td className="px-4 py-2.5 text-gray-600">{v.etablissementNom ?? "—"}</td>
               <td className="px-4 py-2.5 text-gray-600">{v.vendeurNom ?? "—"}</td>
               <td className={`px-4 py-2.5 text-right tabulaire ${v.statut === "annulee" ? "text-gray-400 line-through" : "font-medium"}`}>
                 {fcfa(v.total)}

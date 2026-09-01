@@ -2,14 +2,20 @@ import { supabase } from "../lib/supabase";
 import type {
   Profile, Product, Category, Pack, Supplier, Customer, Sale, CashSession,
   CashMovement, StockMovement, Purchase, Expense, Order, AuditEntry,
-  DashboardStats, ReportData, Pole, PeriodKey, EntrepriseSettings, CaisseSettings,
+  DashboardStats, ReportData, PeriodKey, EntrepriseSettings, CaisseSettings,
+  Establishment, SelectionEtablissement,
 } from "../types";
 
 // ============================================================================
 // Client de l'API EDEN.
-// Chaque appel joint le jeton Supabase courant ; le serveur le vérifie puis
-// applique les rôles. Aucune requête ne part directement vers Postgres depuis
-// le navigateur : RLS bloque tout accès avec la clé publishable.
+// Chaque appel joint le jeton Supabase courant ; le serveur le vérifie, puis
+// applique les rôles ET le cloisonnement par établissement. Aucune requête ne
+// part directement vers Postgres depuis le navigateur : RLS bloque tout accès
+// avec la clé publishable.
+//
+// La sélection d'établissement est passée explicitement à chaque appel plutôt
+// que gardée dans un état global : impossible pour un écran d'afficher les
+// données d'un établissement en croyant montrer celles d'un autre.
 // ============================================================================
 
 export class ApiError extends Error {
@@ -51,60 +57,81 @@ const patch = <T>(chemin: string, corps: unknown) =>
 const put = <T>(chemin: string, corps: unknown) =>
   appel<T>(chemin, { method: "PUT", body: JSON.stringify(corps) });
 
-/** Construit `?periode=...&debut=...&fin=...&pole=...` en ignorant les vides. */
+/** `"tous"` n'est pas envoyé : son absence signifie la vue consolidée. */
+function paramEtab(p: URLSearchParams, etab?: SelectionEtablissement) {
+  if (typeof etab === "number") p.set("establishmentId", String(etab));
+  return p;
+}
+
+function requete(etab?: SelectionEtablissement, extra: Record<string, string> = {}): string {
+  const p = new URLSearchParams(extra);
+  paramEtab(p, etab);
+  const q = p.toString();
+  return q ? `?${q}` : "";
+}
+
+/** Construit `?periode=…&debut=…&fin=…&establishmentId=…`. */
 export function parametresPeriode(
   periode: PeriodKey,
-  options: { debut?: string; fin?: string; pole?: Pole | "" } = {}
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
 ): string {
   const p = new URLSearchParams({ periode });
   if (periode === "personnalise" && options.debut && options.fin) {
     p.set("debut", options.debut);
     p.set("fin", options.fin);
   }
-  if (options.pole) p.set("pole", options.pole);
+  paramEtab(p, options.etablissement);
   return `?${p.toString()}`;
 }
 
 // --- Profil et utilisateurs (§5.1) -----------------------------------------
 
-export const getMonProfil = () => get<Profile>("/me");
+export type ProfilCourant = Profile & { peutChangerEtablissement: boolean };
+
+export const getMonProfil = () => get<ProfilCourant>("/me");
 export const getUtilisateurs = () => get<Profile[]>("/users");
 export const creerUtilisateur = (corps: {
   email: string; password: string; fullName: string; role: string;
-  pole?: Pole | null; poste?: string; telephone?: string; salaire?: number; dateEntree?: string;
+  establishmentId?: number | null; poste?: string; telephone?: string;
+  salaire?: number; dateEntree?: string;
 }) => post<Profile>("/users", corps);
 export const modifierUtilisateur = (id: string, corps: Partial<Profile> & { motif?: string }) =>
   patch<Profile>(`/users/${id}`, corps);
 export const reinitialiserMotDePasse = (id: string, password: string) =>
   post<{ ok: boolean }>(`/users/${id}/password`, { password });
 
+// --- Établissements ---------------------------------------------------------
+
+export const getEtablissements = () => get<Establishment[]>("/establishments");
+export const creerEtablissement = (corps: Partial<Establishment>) =>
+  post<Establishment>("/establishments", corps);
+export const modifierEtablissement = (id: number, corps: Partial<Establishment>) =>
+  patch<Establishment>(`/establishments/${id}`, corps);
+
 // --- Catalogue (§2, §3, §5.5) ----------------------------------------------
 
-export const getCategories = () => get<Category[]>("/categories");
+export const getCategories = (etab?: SelectionEtablissement) =>
+  get<Category[]>(`/categories${requete(etab)}`);
 export const creerCategorie = (corps: Partial<Category>) => post<Category>("/categories", corps);
 export const modifierCategorie = (id: number, corps: Partial<Category>) =>
   patch<Category>(`/categories/${id}`, corps);
 
-export const getProduits = (options: { pole?: Pole | ""; tous?: boolean } = {}) => {
-  const p = new URLSearchParams();
-  if (options.pole) p.set("pole", options.pole);
-  if (options.tous) p.set("actif", "tous");
-  const q = p.toString();
-  return get<Product[]>(`/products${q ? `?${q}` : ""}`);
-};
+export const getProduits = (etab?: SelectionEtablissement, options: { tous?: boolean } = {}) =>
+  get<Product[]>(`/products${requete(etab, options.tous ? { actif: "tous" } : {})}`);
 export const creerProduit = (corps: Partial<Product>) => post<Product>("/products", corps);
 export const modifierProduit = (id: number, corps: Partial<Product> & { motif?: string }) =>
   patch<Product>(`/products/${id}`, corps);
 
-export const getPacks = () => get<Pack[]>("/packs");
-export const creerPack = (corps: Partial<Pack> & { items?: { productId: number; quantite: number }[] }) =>
-  post<Pack>("/packs", corps);
+export const getPacks = (etab?: SelectionEtablissement) => get<Pack[]>(`/packs${requete(etab)}`);
+export const creerPack = (
+  corps: Partial<Pack> & { items?: { productId: number; quantite: number }[] }
+) => post<Pack>("/packs", corps);
 export const modifierPack = (
   id: number,
   corps: Partial<Pack> & { items?: { productId: number; quantite: number }[] }
 ) => patch<Pack>(`/packs/${id}`, corps);
 
-// --- Fournisseurs et clients (§5.6, §5.9) ----------------------------------
+// --- Fournisseurs et clients (communs aux établissements) ------------------
 
 export const getFournisseurs = () => get<Supplier[]>("/suppliers");
 export const creerFournisseur = (corps: Partial<Supplier>) => post<Supplier>("/suppliers", corps);
@@ -113,8 +140,8 @@ export const modifierFournisseur = (id: number, corps: Partial<Supplier>) =>
 
 export const getClients = (recherche = "") =>
   get<Customer[]>(`/customers${recherche ? `?q=${encodeURIComponent(recherche)}` : ""}`);
-export const getClient = (id: number) =>
-  get<Customer & { ventes: Sale[]; commandes: Order[] }>(`/customers/${id}`);
+export const getClient = (id: number, etab?: SelectionEtablissement) =>
+  get<Customer & { ventes: Sale[]; commandes: Order[] }>(`/customers/${id}${requete(etab)}`);
 export const creerClient = (corps: Partial<Customer>) => post<Customer>("/customers", corps);
 export const modifierClient = (id: number, corps: Partial<Customer>) =>
   patch<Customer>(`/customers/${id}`, corps);
@@ -124,24 +151,28 @@ export const modifierClient = (id: number, corps: Partial<Customer>) =>
 export type CaisseCourante =
   (CashSession & { soldeTheorique: number; mouvements: CashMovement[] }) | null;
 
-export const getCaisseCourante = (pole: Pole) => get<CaisseCourante>(`/cash/current?pole=${pole}`);
-export const ouvrirCaisse = (corps: { pole: Pole; fondsInitial: number; notes?: string }) =>
-  post<CashSession>("/cash/open", corps);
+export const getCaisseCourante = (etablissementId: number) =>
+  get<CaisseCourante>(`/cash/current?establishmentId=${etablissementId}`);
+export const ouvrirCaisse = (corps: {
+  establishmentId: number; fondsInitial: number; notes?: string;
+}) => post<CashSession>("/cash/open", corps);
 export const fermerCaisse = (corps: { sessionId: number; soldePhysique: number; notes?: string }) =>
   post<CashSession>("/cash/close", corps);
 export const ajouterMouvementCaisse = (corps: {
   sessionId: number; type: string; montant: number; motif: string; paymentMethod?: string;
 }) => post<CashMovement>("/cash/movements", corps);
-export const getSessionsCaisse = (pole?: Pole) =>
-  get<CashSession[]>(`/cash/sessions${pole ? `?pole=${pole}` : ""}`);
+export const getSessionsCaisse = (etab?: SelectionEtablissement) =>
+  get<CashSession[]>(`/cash/sessions${requete(etab)}`);
 
 // --- Ventes (§5.2) ---------------------------------------------------------
 
-export const getVentes = (periode: PeriodKey, options: { debut?: string; fin?: string; pole?: Pole | "" } = {}) =>
-  get<Sale[]>(`/sales${parametresPeriode(periode, options)}`);
+export const getVentes = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<Sale[]>(`/sales${parametresPeriode(periode, options)}`);
 export const getVente = (id: number) => get<Sale>(`/sales/${id}`);
 export const enregistrerVente = (corps: {
-  pole: Pole;
+  establishmentId: number;
   items: { productId?: number; packId?: number; quantite: number }[];
   paymentMethod: string;
   numeroTransaction?: string;
@@ -153,24 +184,31 @@ export const annulerVente = (id: number, motif: string) =>
 
 // --- Stock (§5.5) ----------------------------------------------------------
 
-export const getMouvementsStock = (productId?: number) =>
-  get<StockMovement[]>(`/stock/movements${productId ? `?productId=${productId}` : ""}`);
-export const getAlertesStock = () =>
-  get<{
-    ruptures: { id: number; nom: string; pole: Pole; quantite: number; seuilAlerte: number; unite: string }[];
-    bientotEnRupture: { id: number; nom: string; pole: Pole; quantite: number; seuilAlerte: number; unite: string }[];
-  }>("/stock/alerts");
+export const getMouvementsStock = (etab?: SelectionEtablissement, productId?: number) =>
+  get<StockMovement[]>(
+    `/stock/movements${requete(etab, productId ? { productId: String(productId) } : {})}`
+  );
+
+export interface AlerteStock {
+  id: number; nom: string; establishmentId: number;
+  quantite: number; seuilAlerte: number; unite: string;
+}
+export const getAlertesStock = (etab?: SelectionEtablissement) =>
+  get<{ ruptures: AlerteStock[]; bientotEnRupture: AlerteStock[] }>(`/stock/alerts${requete(etab)}`);
+
 export const ajusterStock = (corps: { productId: number; quantiteReelle: number; motif: string }) =>
   post<{ ok: boolean; ecart: number }>("/stock/adjust", corps);
 
 // --- Achats (§5.6) ---------------------------------------------------------
 
-export const getAchats = (periode: PeriodKey, options: { debut?: string; fin?: string } = {}) =>
-  get<Purchase[]>(`/purchases${parametresPeriode(periode, options)}`);
+export const getAchats = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<Purchase[]>(`/purchases${parametresPeriode(periode, options)}`);
 export const getAchat = (id: number) => get<Purchase>(`/purchases/${id}`);
 export const creerAchat = (corps: {
-  supplierId?: number | null; pole: Pole; dateAchat?: string; montantPaye: number;
-  paymentMethod: string; justificatif?: string; notes?: string;
+  establishmentId: number; supplierId?: number | null; dateAchat?: string;
+  montantPaye: number; paymentMethod: string; justificatif?: string; notes?: string;
   items: { productId?: number | null; libelle: string; quantite: number; prixUnitaire: number }[];
 }) => post<{ id: number; numero: string; montantTotal: number }>("/purchases", corps);
 export const reglerAchat = (id: number, montant: number) =>
@@ -178,32 +216,41 @@ export const reglerAchat = (id: number, montant: number) =>
 
 // --- Dépenses (§5.7) -------------------------------------------------------
 
-export const getDepenses = (periode: PeriodKey, options: { debut?: string; fin?: string; pole?: Pole | "" } = {}) =>
-  get<Expense[]>(`/expenses${parametresPeriode(periode, options)}`);
+export const getDepenses = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<Expense[]>(`/expenses${parametresPeriode(periode, options)}`);
 export const creerDepense = (corps: {
-  pole: Pole; categorie: string; montant: number; motif: string;
+  establishmentId: number; categorie: string; montant: number; motif: string;
   dateDepense?: string; paymentMethod?: string; justificatif?: string;
 }) => post<Expense>("/expenses", corps);
 export const validerDepense = (id: number) => post<Expense>(`/expenses/${id}/validate`);
 
-// --- Commandes infographie (§5.8) ------------------------------------------
+// --- Commandes (§5.8) ------------------------------------------------------
 
-export const getCommandes = (statut?: string) =>
-  get<Order[]>(`/orders${statut ? `?statut=${statut}` : ""}`);
+export const getCommandes = (etab?: SelectionEtablissement, statut?: string) =>
+  get<Order[]>(`/orders${requete(etab, statut ? { statut } : {})}`);
 export const creerCommande = (corps: {
-  customerId?: number | null; customerNom: string; customerTelephone?: string;
-  typePrestation: string; description?: string; quantite: number; prixUnitaire: number;
-  acompte: number; dateLivraisonPrevue?: string; technicienId?: string | null;
+  establishmentId: number; customerId?: number | null; customerNom: string;
+  customerTelephone?: string; typePrestation: string; description?: string;
+  quantite: number; prixUnitaire: number; acompte: number;
+  dateLivraisonPrevue?: string; technicienId?: string | null;
 }) => post<Order>("/orders", corps);
 export const modifierCommande = (id: number, corps: Partial<Order> & { motif?: string }) =>
   patch<Order>(`/orders/${id}`, corps);
 
 // --- Tableau de bord, rapports, journal (§5.10 à §5.13) --------------------
 
-export const getTableauDeBord = (periode: PeriodKey, options: { debut?: string; fin?: string } = {}) =>
-  get<DashboardStats>(`/dashboard${parametresPeriode(periode, options)}`);
-export const getRapport = (periode: PeriodKey, options: { debut?: string; fin?: string } = {}) =>
-  get<ReportData>(`/reports${parametresPeriode(periode, options)}`);
+export const getTableauDeBord = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<DashboardStats>(`/dashboard${parametresPeriode(periode, options)}`);
+
+export const getRapport = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<ReportData>(`/reports${parametresPeriode(periode, options)}`);
+
 export const getJournal = (filtres: { entite?: string; action?: string } = {}) => {
   const p = new URLSearchParams();
   if (filtres.entite) p.set("entite", filtres.entite);

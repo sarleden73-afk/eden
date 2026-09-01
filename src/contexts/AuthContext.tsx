@@ -1,12 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
-import { getMonProfil } from "../services/db";
-import type { Profile, UserRole } from "../types";
+import { getMonProfil, type ProfilCourant } from "../services/db";
+import type { UserRole } from "../types";
 
 interface AuthContextType {
   session: Session | null;
-  profil: Profile | null;
+  profil: ProfilCourant | null;
   loading: boolean;
   /** Erreur de chargement du profil (compte sans profil, ou désactivé). */
   erreurProfil: string | null;
@@ -29,7 +29,7 @@ const EVENEMENTS_ACTIVITE = ["mousedown", "keydown", "touchstart", "scroll"] as 
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
-  const [profil, setProfil] = useState<Profile | null>(null);
+  const [profil, setProfil] = useState<ProfilCourant | null>(null);
   const [loading, setLoading] = useState(true);
   const [erreurProfil, setErreurProfil] = useState<string | null>(null);
 

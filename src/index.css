@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  /* Override Indigo with Premium Gold */
+  --color-indigo-50: #fdfaf6;
+  --color-indigo-100: #fbf5eb;
+  --color-indigo-200: #f4e8d3;
+  --color-indigo-300: #ead4b3;
+  --color-indigo-400: #dfb987;
+  --color-indigo-500: #d4af37; /* Base Gold */
+  --color-indigo-600: #c29b27; /* Hover Gold */
+  --color-indigo-700: #9c781a;
+  --color-indigo-800: #7e5e1b;
+  --color-indigo-900: #6a4f1c;
+  --color-indigo-950: #3d2a0b;
+
+  /* Override Gray with Warm Off-White to Deep Black */
+  --color-gray-50: #fbfaf9;
+  --color-gray-100: #f5f4f2;
+  --color-gray-200: #e9e7e4;
+  --color-gray-300: #d8d5cf;
+  --color-gray-400: #a9a49c;
+  --color-gray-500: #827d75;
+  --color-gray-600: #605c56;
+  --color-gray-700: #4a4742;
+  --color-gray-800: #2a2825;
+  --color-gray-900: #141311; /* Very dark, rich black */
+  --color-gray-950: #0a0908;
+}
+
+body {
+  background-color: var(--color-gray-50);
+  color: var(--color-gray-900);
+}

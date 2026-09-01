@@ -1,0 +1,5 @@
+{
+  "name": "FIDELY",
+  "description": "Digital loyalty card platform for any business",
+  "requestFramePermissions": ["camera"]
+}

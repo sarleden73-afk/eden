@@ -1,138 +1,190 @@
+import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useAuth } from "../contexts/AuthContext";
-import { LayoutDashboard, CreditCard, ScanLine, Users, LogOut, Menu, X, Briefcase, Calendar as CalendarIcon, Scissors, BarChart3, Diamond, Wallet, Shield, Tag, ShoppingCart, Boxes, Star } from "lucide-react";
-import { useState, useEffect } from "react";
-import React from "react";
+import {
+  LayoutDashboard, ShoppingCart, Wallet, ReceiptText, Package, Boxes, Truck,
+  CreditCard, Palette, Users, UserCog, BarChart3, Calculator, History,
+  Settings, LogOut, Menu, X, Sprout, AlertTriangle,
+} from "lucide-react";
 import { cn } from "../lib/utils";
-import { getBusiness } from "../services/db";
-import NotificationBell from "./NotificationBell";
+import { useAuth } from "../contexts/AuthContext";
+import { getAlertesStock } from "../services/db";
+import { ROLE_LABELS, type UserRole } from "../types";
+
+interface Entree {
+  nom: string;
+  href: string;
+  icone: typeof LayoutDashboard;
+  /** Rôles autorisés — miroir des gardes de l'API (§5.1). */
+  roles: UserRole[];
+  groupe: string;
+}
+
+const TOUS: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
+const VALIDENT: UserRole[] = ["admin", "responsable"];
+const ADMIN: UserRole[] = ["admin"];
+
+const NAVIGATION: Entree[] = [
+  { nom: "Tableau de bord", href: "/tableau-de-bord", icone: LayoutDashboard, roles: TOUS, groupe: "Pilotage" },
+
+  { nom: "Vendre", href: "/vente", icone: ShoppingCart, roles: TOUS, groupe: "Exploitation" },
+  { nom: "Caisse", href: "/caisse", icone: Wallet, roles: TOUS, groupe: "Exploitation" },
+  { nom: "Ventes", href: "/ventes", icone: ReceiptText, roles: TOUS, groupe: "Exploitation" },
+  { nom: "Commandes", href: "/commandes", icone: Palette, roles: TOUS, groupe: "Exploitation" },
+  { nom: "Clients", href: "/clients", icone: Users, roles: TOUS, groupe: "Exploitation" },
+
+  { nom: "Catalogue", href: "/catalogue", icone: Package, roles: TOUS, groupe: "Gestion" },
+  { nom: "Stocks", href: "/stocks", icone: Boxes, roles: TOUS, groupe: "Gestion" },
+  { nom: "Achats", href: "/achats", icone: Truck, roles: VALIDENT, groupe: "Gestion" },
+  { nom: "Dépenses", href: "/depenses", icone: CreditCard, roles: TOUS, groupe: "Gestion" },
+
+  { nom: "Rapports", href: "/rapports", icone: BarChart3, roles: VALIDENT, groupe: "Direction" },
+  { nom: "Comptabilité", href: "/comptabilite", icone: Calculator, roles: ADMIN, groupe: "Direction" },
+  { nom: "Personnel", href: "/personnel", icone: UserCog, roles: ADMIN, groupe: "Direction" },
+  { nom: "Journal", href: "/journal", icone: History, roles: VALIDENT, groupe: "Direction" },
+  { nom: "Paramètres", href: "/parametres", icone: Settings, roles: ADMIN, groupe: "Direction" },
+];
+
+const ORDRE_GROUPES = ["Pilotage", "Exploitation", "Gestion", "Direction"];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { user, logout } = useAuth();
+  const { profil, deconnexion } = useAuth();
   const location = useLocation();
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [businessName, setBusinessName] = useState("Fidely");
-  const [role, setRole] = useState<string>("admin");
-  const [businessId, setBusinessId] = useState<number | null>(null);
+  const [menuOuvert, setMenuOuvert] = useState(false);
+  const [nbAlertes, setNbAlertes] = useState(0);
 
+  // Compteur d'alertes de stock (§5.5) affiché en permanence : une rupture non
+  // vue est une vente perdue.
   useEffect(() => {
-    if (user) {
-      getBusiness(user.id).then(rest => {
-        if (rest) {
-          setBusinessName(rest.name);
-          setBusinessId(rest.id);
-          if (rest.role) setRole(rest.role);
-        }
-      });
-    }
-  }, [user]);
+    let annule = false;
+    const charger = () =>
+      getAlertesStock()
+        .then((a) => { if (!annule) setNbAlertes(a.ruptures.length + a.bientotEnRupture.length); })
+        .catch(() => { /* le badge est indicatif : son échec ne doit rien casser */ });
 
-  const displayName = user?.user_metadata?.full_name || user?.user_metadata?.name || user?.email || "Utilisateur";
+    charger();
+    const timer = window.setInterval(charger, 120_000);
+    return () => { annule = true; window.clearInterval(timer); };
+  }, [location.pathname]);
 
-  // Staff voit : Agenda, Clients, Catégories, Prestations, Fidélité, Scanner, Comptabilité.
-  // Admin voit tout (+ Tableau de bord, Employés, Personnel, Rapports).
-  // Staff a accès à tout, sauf Personnel et Rapports (réservés admin).
-  // Employee (pointage uniquement) ne voit que la page Employés — voir le filtre ci-dessous.
-  const navItems = [
-    { name: "Tableau de bord", href: "/dashboard", icon: LayoutDashboard, adminOnly: false },
-    { name: "Vendre (Caisse)", href: "/vente", icon: ShoppingCart, adminOnly: false },
-    { name: "Agenda", href: "/appointments", icon: CalendarIcon, adminOnly: false },
-    { name: "Clients", href: "/customers", icon: Users, adminOnly: false },
-    { name: "Employés", href: "/employees", icon: Briefcase, adminOnly: false },
-    { name: "Catégories", href: "/categories", icon: Tag, adminOnly: false },
-    { name: "Prestations", href: "/services", icon: Scissors, adminOnly: false },
-    { name: "Fidélité", href: "/programs", icon: CreditCard, adminOnly: false },
-    { name: "Scanner", href: "/scanner", icon: ScanLine, adminOnly: false },
-    { name: "Comptabilité", href: "/accounting", icon: Wallet, adminOnly: false },
-    { name: "Inventaire", href: "/inventory", icon: Boxes, adminOnly: false },
-    { name: "Avis clients", href: "/reviews", icon: Star, adminOnly: true },
-    { name: "Personnel", href: "/personnel", icon: Shield, adminOnly: true },
-    { name: "Rapports", href: "/reports", icon: BarChart3, adminOnly: true },
-  ]
-    .filter(item => !item.adminOnly || role === "admin")
-    .filter(item => role !== "employee" || item.href === "/employees");
+  // Ferme le tiroir mobile à chaque navigation.
+  useEffect(() => { setMenuOuvert(false); }, [location.pathname]);
+
+  const role = profil?.role ?? "caissier";
+  const visibles = NAVIGATION.filter((e) => e.roles.includes(role));
+
+  const barreLaterale = (
+    <>
+      <div className="h-16 flex items-center px-5 border-b border-gray-800 shrink-0">
+        <Sprout className="h-6 w-6 text-indigo-500 mr-2.5 shrink-0" />
+        <div className="min-w-0">
+          <div className="text-sm font-bold tracking-wide text-white truncate">EDEN</div>
+          <div className="text-[10px] uppercase tracking-widest text-gray-500">Multi-Services</div>
+        </div>
+        <button
+          onClick={() => setMenuOuvert(false)}
+          className="lg:hidden ml-auto p-1 rounded hover:bg-gray-800"
+          aria-label="Fermer le menu"
+        >
+          <X className="h-5 w-5 text-gray-400" />
+        </button>
+      </div>
+
+      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+        {ORDRE_GROUPES.map((groupe) => {
+          const entrees = visibles.filter((e) => e.groupe === groupe);
+          if (!entrees.length) return null;
+
+          return (
+            <div key={groupe}>
+              <div className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-gray-600">
+                {groupe}
+              </div>
+              <div className="space-y-0.5">
+                {entrees.map((e) => {
+                  const actif = location.pathname.startsWith(e.href);
+                  return (
+                    <Link
+                      key={e.href}
+                      to={e.href}
+                      className={cn(
+                        "flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors",
+                        actif
+                          ? "bg-indigo-950 text-indigo-300"
+                          : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
+                      )}
+                    >
+                      <e.icone className={cn("mr-3 h-[18px] w-[18px] shrink-0", actif ? "text-indigo-400" : "text-gray-500")} />
+                      <span className="truncate">{e.nom}</span>
+                      {e.href === "/stocks" && nbAlertes > 0 && (
+                        <span className="ml-auto flex items-center gap-1 text-[11px] font-semibold text-amber-400">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          {nbAlertes}
+                        </span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </nav>
+
+      <div className="shrink-0 p-3 border-t border-gray-800">
+        <div className="flex items-center gap-3 px-3 py-2.5 mb-2 bg-gray-900 rounded-lg">
+          <div className="h-9 w-9 rounded-full bg-indigo-900 flex items-center justify-center text-indigo-300 font-semibold shrink-0">
+            {profil?.fullName?.[0]?.toUpperCase() ?? "?"}
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-100 truncate">{profil?.fullName}</p>
+            <p className="text-xs text-gray-500 truncate">{ROLE_LABELS[role]}</p>
+          </div>
+        </div>
+        <button
+          onClick={deconnexion}
+          className="w-full flex items-center px-3 py-2.5 text-sm font-medium text-gray-400 rounded-lg hover:bg-gray-900 hover:text-red-400 transition-colors"
+        >
+          <LogOut className="mr-3 h-[18px] w-[18px]" />
+          Déconnexion
+        </button>
+      </div>
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
-      <aside className={cn(
-        "fixed inset-y-0 left-0 z-50 w-64 bg-gray-950 border-r border-gray-900 transform transition-transform duration-200 ease-in-out lg:translate-x-0 lg:static lg:inset-0 flex flex-col",
-        isMobileMenuOpen ? "translate-x-0" : "-translate-x-full"
-      )}>
-        <div className="h-16 flex items-center px-6 border-b border-gray-900 shrink-0">
-          <Diamond className="h-6 w-6 text-indigo-500 mr-2" />
-          <span className="text-xl font-bold tracking-widest text-indigo-500 uppercase truncate" title={businessName}>{businessName}</span>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="lg:hidden ml-auto">
-            <X className="h-6 w-6 text-gray-500" />
-          </button>
-        </div>
+      {menuOuvert && (
+        <div
+          className="fixed inset-0 z-40 bg-gray-950/50 lg:hidden"
+          onClick={() => setMenuOuvert(false)}
+        />
+      )}
 
-        <nav className="p-4 space-y-1 flex-1 overflow-y-auto">
-          {navItems.map((item) => {
-            const isActive = location.pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                onClick={() => setIsMobileMenuOpen(false)}
-                className={cn(
-                  "flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-all duration-200",
-                  isActive
-                    ? "bg-indigo-900/40 text-indigo-400 border border-indigo-900/50"
-                    : "text-gray-400 hover:bg-gray-900 hover:text-gray-200"
-                )}
-              >
-                <item.icon className={cn("mr-3 h-5 w-5", isActive ? "text-indigo-400" : "text-gray-500")} />
-                {item.name}
-              </Link>
-            );
-          })}
-        </nav>
-
-        <div className="shrink-0 p-4 border-t border-gray-900">
-          <div className="flex items-center mb-4 px-3 py-2 bg-gray-900 rounded-lg">
-            <div className="h-8 w-8 rounded-full bg-indigo-900 flex items-center justify-center text-indigo-400 font-bold shrink-0">
-              {displayName[0]?.toUpperCase() || "U"}
-            </div>
-            <div className="ml-3 overflow-hidden">
-              <p className="text-sm font-medium text-gray-200 truncate">{displayName}</p>
-              <p className="text-xs text-gray-500 truncate">{user?.email}</p>
-            </div>
-          </div>
-          <button
-            onClick={logout}
-            className="w-full flex items-center px-4 py-2 text-sm font-medium text-gray-400 rounded-lg hover:bg-gray-900 hover:text-red-400 transition-colors"
-          >
-            <LogOut className="mr-3 h-5 w-5" />
-            Déconnexion
-          </button>
-        </div>
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 w-64 bg-gray-950 flex flex-col",
+          "transform transition-transform duration-200 lg:translate-x-0 lg:static sans-impression",
+          menuOuvert ? "translate-x-0" : "-translate-x-full"
+        )}
+      >
+        {barreLaterale}
       </aside>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <header className="lg:hidden bg-gray-950 border-b border-gray-900 h-16 flex items-center px-4 justify-between">
-          <div className="flex items-center min-w-0 flex-1 mr-2">
-            <Diamond className="h-6 w-6 text-indigo-500 mr-2 flex-shrink-0" />
-            <span className="text-xl font-bold tracking-widest text-indigo-500 uppercase truncate" title={businessName}>{businessName}</span>
-          </div>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <NotificationBell businessId={businessId} />
-            <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -mr-2 rounded-lg hover:bg-gray-900 active:bg-gray-800" aria-label="Ouvrir le menu">
-              <Menu className="h-7 w-7 text-gray-200" />
-            </button>
-          </div>
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="lg:hidden h-16 shrink-0 bg-gray-950 flex items-center px-4 gap-3 sans-impression">
+          <button
+            onClick={() => setMenuOuvert(true)}
+            className="p-2 -ml-2 rounded-lg hover:bg-gray-900"
+            aria-label="Ouvrir le menu"
+          >
+            <Menu className="h-6 w-6 text-gray-200" />
+          </button>
+          <Sprout className="h-5 w-5 text-indigo-500" />
+          <span className="font-bold tracking-wide text-white">EDEN</span>
         </header>
 
-        {/* Barre supérieure (desktop) : cloche de notifications */}
-        <div className="hidden lg:flex items-center justify-end h-14 px-8 border-b border-gray-100 bg-white">
-          <NotificationBell businessId={businessId} />
-        </div>
-
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          <div className="max-w-7xl mx-auto">
-            {children}
-          </div>
+          <div className="max-w-7xl mx-auto">{children}</div>
         </main>
       </div>
     </div>

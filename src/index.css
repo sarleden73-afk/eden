@@ -1,34 +1,63 @@
 @import "tailwindcss";
 
-@theme {
-  /* Override Indigo with Premium Gold */
-  --color-indigo-50: #fdfaf6;
-  --color-indigo-100: #fbf5eb;
-  --color-indigo-200: #f4e8d3;
-  --color-indigo-300: #ead4b3;
-  --color-indigo-400: #dfb987;
-  --color-indigo-500: #d4af37; /* Base Gold */
-  --color-indigo-600: #c29b27; /* Hover Gold */
-  --color-indigo-700: #9c781a;
-  --color-indigo-800: #7e5e1b;
-  --color-indigo-900: #6a4f1c;
-  --color-indigo-950: #3d2a0b;
+/* Identité EDEN MULTI-SERVICES.
+   Les tokens `indigo` et `gray` de Tailwind sont redéfinis plutôt que d'inventer
+   de nouveaux noms : toutes les classes utilitaires standard (bg-indigo-600,
+   text-gray-500...) prennent la charte sans réécriture, et un futur composant
+   copié d'ailleurs s'y conforme automatiquement.
 
-  /* Override Gray with Warm Off-White to Deep Black */
-  --color-gray-50: #fbfaf9;
-  --color-gray-100: #f5f4f2;
-  --color-gray-200: #e9e7e4;
-  --color-gray-300: #d8d5cf;
-  --color-gray-400: #a9a49c;
-  --color-gray-500: #827d75;
-  --color-gray-600: #605c56;
-  --color-gray-700: #4a4742;
-  --color-gray-800: #2a2825;
-  --color-gray-900: #141311; /* Very dark, rich black */
-  --color-gray-950: #0a0908;
+   indigo -> vert Eden (couleur d'accent, actions primaires)
+   gray   -> gris chauds, du blanc cassé au noir profond (structure) */
+@theme {
+  --color-indigo-50:  #eefbf3;
+  --color-indigo-100: #d6f5e2;
+  --color-indigo-200: #b0e9c9;
+  --color-indigo-300: #7bd7a8;
+  --color-indigo-400: #45bd83;
+  --color-indigo-500: #1fa066; /* vert Eden */
+  --color-indigo-600: #158053;
+  --color-indigo-700: #136644;
+  --color-indigo-800: #135138;
+  --color-indigo-900: #11432f;
+  --color-indigo-950: #06251a;
+
+  --color-gray-50:  #fbfaf9;
+  --color-gray-100: #f4f3f1;
+  --color-gray-200: #e8e6e2;
+  --color-gray-300: #d6d3cd;
+  --color-gray-400: #a8a49c;
+  --color-gray-500: #7f7a72;
+  --color-gray-600: #5e5a54;
+  --color-gray-700: #474440;
+  --color-gray-800: #292724;
+  --color-gray-900: #16150f;
+  --color-gray-950: #0b0a07;
+
+  /* Or : réservé aux montants et aux totaux, pour que l'argent se repère
+     immédiatement dans un tableau dense. */
+  --color-amber-500: #d4a017;
+  --color-amber-600: #b8860b;
 }
 
 body {
   background-color: var(--color-gray-50);
   color: var(--color-gray-900);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Les chiffres alignés en colonne se comparent à l'œil : indispensable dans les
+   tableaux de ventes, de stock et de caisse. */
+.tabulaire {
+  font-variant-numeric: tabular-nums;
+}
+
+/* L'app tourne beaucoup sur tablette au comptoir : cibles tactiles confortables
+   et pas de zoom involontaire à la saisie (iOS zoome sous 16px). */
+input, select, textarea {
+  font-size: 16px;
+}
+
+@media print {
+  .sans-impression { display: none !important; }
+  body { background: white; }
 }

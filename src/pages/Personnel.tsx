@@ -1,214 +1,431 @@
-import React, { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { UserCog, Plus, Pencil, KeyRound, ShieldCheck, FileDown, Copy, Check } from "lucide-react";
 import Layout from "../components/Layout";
+import {
+  PageHeader, Card, Bouton, Saisie, Liste, Champ, Erreur, Chargement,
+  Badge, Modale, Tableau, Vide,
+} from "../components/ui";
+import {
+  getUtilisateurs, creerUtilisateur, modifierUtilisateur, reinitialiserMotDePasse,
+} from "../services/db";
+import { fcfa, dateCourte } from "../lib/format";
+import { exporterCSV } from "../lib/export";
+import { cn } from "../lib/utils";
+import { ROLE_LABELS, POLE_LABELS, type Profile, type UserRole, type Pole } from "../types";
 import { useAuth } from "../contexts/AuthContext";
-import { getBusiness, getMembers, createMember, updateMemberRole, deleteMember, getEmployees, Member, Employee } from "../services/db";
-import { Plus, X, Trash2, Shield, User, Lock, Mail } from "lucide-react";
 
+const TONS_ROLE: Record<UserRole, "info" | "succes" | "neutre" | "alerte"> = {
+  admin: "info",
+  responsable: "succes",
+  caissier: "neutre",
+  technicien: "alerte",
+};
+
+/** Résumé des autorisations du §5.1, affiché pour cadrer la création de compte. */
+const DROITS: Record<UserRole, string[]> = {
+  admin: [
+    "Accès à tout",
+    "Gestion des utilisateurs",
+    "Modification des prix",
+    "Consultation de la comptabilité et des rapports",
+  ],
+  responsable: [
+    "Consultation des ventes et du stock",
+    "Validation des dépenses et des annulations",
+    "Fermeture de caisse et inventaires",
+    "Suivi des employés et rapports",
+  ],
+  caissier: [
+    "Enregistrement des ventes et encaissement",
+    "Ouverture de caisse et mouvements",
+    "Consultation limitée du stock",
+    "Ne voit que ses propres ventes",
+  ],
+  technicien: [
+    "Enregistrement des prestations cyber et infographie",
+    "Suivi des commandes clients",
+    "Encaissement",
+    "Consultation limitée du stock",
+  ],
+};
+
+/** §5.1 Gestion des utilisateurs — réservé à l'administrateur. */
 export default function Personnel() {
-  const { user } = useAuth();
-  const [business, setBusiness] = useState<any>(null);
-  const [members, setMembers] = useState<Member[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
-  const [formError, setFormError] = useState("");
-  const [form, setForm] = useState({ email: "", password: "", name: "", role: "staff" as "admin" | "staff" | "employee", employeeId: "" });
-  const [saving, setSaving] = useState(false);
+  const { profil } = useAuth();
+  const [utilisateurs, setUtilisateurs] = useState<Profile[]>([]);
+  const [chargement, setChargement] = useState(true);
+  const [erreur, setErreur] = useState<string | null>(null);
+  const [edite, setEdite] = useState<Profile | "nouveau" | null>(null);
+  const [motDePasseA, setMotDePasseA] = useState<Profile | null>(null);
 
-  useEffect(() => { if (user) load(); }, [user]);
-
-  const load = async () => {
+  const recharger = useCallback(async () => {
+    setChargement(true);
     try {
-      const rest = await getBusiness(user!.id);
-      setBusiness(rest);
-      if (rest && rest.role === "admin") {
-        setMembers(await getMembers(rest.id));
-        setEmployees(await getEmployees(rest.id));
-      }
-    } catch (e) { console.error(e); } finally { setLoading(false); }
-  };
+      setUtilisateurs(await getUtilisateurs());
+      setErreur(null);
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Chargement impossible.");
+    } finally {
+      setChargement(false);
+    }
+  }, []);
 
-  const handleAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (saving) return;
-    setSaving(true);
-    setFormError("");
-    try {
-      await createMember(business.id, {
-        email: form.email, password: form.password, name: form.name, role: form.role,
-        employeeId: form.role === "employee" && form.employeeId ? parseInt(form.employeeId) : undefined,
-      });
-      setShowModal(false);
-      setForm({ email: "", password: "", name: "", role: "staff", employeeId: "" });
-      setMembers(await getMembers(business.id));
-    } catch (err) {
-      setFormError((err as Error).message || "Échec de l'ajout.");
-    } finally { setSaving(false); }
-  };
+  useEffect(() => { void recharger(); }, [recharger]);
 
-  const handleRole = async (id: number, role: "admin" | "staff" | "employee", employeeId?: number) => {
-    try { await updateMemberRole(id, role, employeeId); setMembers(await getMembers(business.id)); } catch (e) { console.error(e); }
-  };
-
-  const handleDelete = async (id: number) => {
-    try { await deleteMember(id); setMembers(await getMembers(business.id)); } catch (e) { console.error(e); }
-  };
-
-  if (loading) return <Layout><div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></div></Layout>;
-
-  if (business && business.role !== "admin") {
-    return (
-      <Layout>
-        <div className="max-w-md mx-auto mt-16 bg-white p-8 rounded-2xl shadow-sm border border-gray-100 text-center">
-          <Lock className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-          <h2 className="text-lg font-bold text-gray-900">Accès réservé</h2>
-          <p className="text-gray-500 mt-1">La gestion du personnel est réservée aux administrateurs.</p>
-        </div>
-      </Layout>
+  const exporter = () =>
+    exporterCSV(
+      "personnel-eden",
+      ["Nom complet", "E-mail", "Rôle", "Pôle", "Poste", "Téléphone", "Salaire", "Date d'entrée", "État"],
+      utilisateurs.map((u) => [
+        u.fullName, u.email, ROLE_LABELS[u.role],
+        u.pole ? POLE_LABELS[u.pole] : "Les deux pôles",
+        u.poste ?? "", u.telephone ?? "", u.salaire ?? "",
+        dateCourte(u.dateEntree), u.actif ? "Actif" : "Désactivé",
+      ])
     );
-  }
 
   return (
     <Layout>
-      <div className="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 tracking-tight">Personnel & Accès</h1>
-          <p className="text-sm text-gray-500 mt-1">Gérez qui peut se connecter et avec quels droits</p>
-        </div>
-        <button onClick={() => { setFormError(""); setShowModal(true); }}
-          className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-sm text-sm font-medium">
-          <Plus className="h-4 w-4 mr-2" /> Inviter un membre
-        </button>
-      </div>
+      <PageHeader titre="Personnel" sousTitre="Comptes, rôles et autorisations">
+        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!utilisateurs.length}>
+          Excel
+        </Bouton>
+        <Bouton icone={Plus} onClick={() => setEdite("nouveau")}>Nouveau compte</Bouton>
+      </PageHeader>
 
-      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 mb-6 text-sm text-indigo-800">
-        <strong>Comment ça marche :</strong> créez un accès avec un e-mail + un mot de passe (l'e-mail n'a pas besoin d'exister vraiment) et choisissez le rôle.
-        Le membre se connecte sur la page de connexion de Fidely avec ces identifiants et accède automatiquement à votre établissement.
-        Les <strong>administrateurs</strong> ont accès à tout. Le <strong>staff</strong> peut vendre, gérer les clients, pointer et modifier la comptabilité, mais ne peut ni supprimer une écriture comptable, ni supprimer un employé, ni gérer ce personnel (cette page) ni consulter les Rapports.
-        Le rôle <strong>employé</strong> est le plus restreint : accès uniquement à l'écran de pointage (arrivée/départ), rien d'autre.
-      </div>
+      <Erreur message={erreur} />
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50 flex items-center">
-          <Shield className="h-4 w-4 text-indigo-500 mr-2" />
-          <span className="text-sm font-medium text-gray-900">Propriétaire (administrateur)</span>
-          <span className="ml-auto text-sm text-gray-500">{user?.email}</span>
-        </div>
-        {members.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">Aucun membre invité pour le moment.</div>
+      <Card>
+        {chargement ? (
+          <Chargement />
+        ) : utilisateurs.length === 0 ? (
+          <Vide icone={UserCog} titre="Aucun compte" />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase">
-                  <th className="px-6 py-3">Membre</th>
-                  <th className="px-6 py-3">Rôle</th>
-                  <th className="px-6 py-3">Statut</th>
-                  <th className="px-6 py-3"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {members.map(m => (
-                  <tr key={m.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center">
-                        <div className="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold mr-3">
-                          {(m.name || m.email)[0].toUpperCase()}
-                        </div>
-                        <div>
-                          {m.name && <p className="text-sm font-medium text-gray-900">{m.name}</p>}
-                          <p className="text-xs text-gray-500">{m.email}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <select value={m.role} onChange={e => handleRole(m.id, e.target.value as any, m.employeeId)}
-                          className="text-sm border-gray-300 rounded-lg shadow-sm">
-                          <option value="admin">Administrateur</option>
-                          <option value="staff">Staff</option>
-                          <option value="employee">Employé (pointage uniquement)</option>
-                        </select>
-                        {m.role === "employee" && (
-                          <select value={m.employeeId || ""} onChange={e => handleRole(m.id, "employee", e.target.value ? parseInt(e.target.value) : undefined)}
-                            title="Lié à quel employé du planning ?"
-                            className={`text-sm rounded-lg shadow-sm ${m.employeeId ? "border-gray-300" : "border-amber-300 bg-amber-50 text-amber-800"}`}>
-                            <option value="">Lié à qui ?</option>
-                            {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
-                          </select>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${m.uid ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
-                        {m.uid ? "Connecté" : "En attente"}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right">
-                      <button onClick={() => handleDelete(m.id)} className="text-gray-400 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Tableau entetes={["Employé", "Rôle", "Pôle", "Poste", " Salaire", "Entrée", "État", ""]}>
+            {utilisateurs.map((u) => (
+              <tr key={u.id} className={cn("hover:bg-gray-50", !u.actif && "opacity-50")}>
+                <td className="px-4 py-3">
+                  <div className="font-medium text-gray-900">
+                    {u.fullName}
+                    {u.id === profil?.id && <span className="ml-2 text-xs text-gray-500">(vous)</span>}
+                  </div>
+                  <div className="text-xs text-gray-500">{u.email}</div>
+                </td>
+                <td className="px-4 py-3"><Badge ton={TONS_ROLE[u.role]}>{ROLE_LABELS[u.role]}</Badge></td>
+                <td className="px-4 py-3 text-gray-600 text-sm">
+                  {u.pole ? POLE_LABELS[u.pole] : <span className="text-gray-400">Les deux</span>}
+                </td>
+                <td className="px-4 py-3 text-gray-600">{u.poste ?? "—"}</td>
+                <td className="px-4 py-3 text-right tabulaire text-gray-600 whitespace-nowrap">
+                  {u.salaire ? fcfa(u.salaire) : <span className="text-gray-400">—</span>}
+                </td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(u.dateEntree)}</td>
+                <td className="px-4 py-3">
+                  {u.actif ? <Badge ton="succes">Actif</Badge> : <Badge ton="neutre">Désactivé</Badge>}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-1">
+                    <button
+                      onClick={() => setMotDePasseA(u)}
+                      className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                      title="Réinitialiser le mot de passe"
+                    >
+                      <KeyRound className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => setEdite(u)}
+                      className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                      title="Modifier"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </Tableau>
         )}
+      </Card>
+
+      <Card className="mt-5 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <ShieldCheck className="h-5 w-5 text-indigo-600" />
+          <h2 className="font-semibold text-gray-900">Ce que permet chaque rôle</h2>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {(Object.keys(DROITS) as UserRole[]).map((role) => (
+            <div key={role} className="p-4 bg-gray-50 rounded-lg">
+              <Badge ton={TONS_ROLE[role]}>{ROLE_LABELS[role]}</Badge>
+              <ul className="mt-3 space-y-1.5">
+                {DROITS[role].map((d) => (
+                  <li key={d} className="flex gap-2 text-xs text-gray-600">
+                    <span className="text-indigo-500 shrink-0">•</span>{d}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 text-xs text-gray-500">
+          Ces règles sont appliquées côté serveur : masquer un écran ne suffirait pas, chaque
+          appel à l'API vérifie le rôle de l'utilisateur qui le déclenche.
+        </p>
+      </Card>
+
+      <ModaleUtilisateur
+        cible={edite} onFermer={() => setEdite(null)}
+        onSucces={() => { setEdite(null); void recharger(); }}
+      />
+      <ModaleMotDePasse utilisateur={motDePasseA} onFermer={() => setMotDePasseA(null)} />
+    </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function ModaleUtilisateur({
+  cible, onFermer, onSucces,
+}: { cible: Profile | "nouveau" | null; onFermer: () => void; onSucces: () => void }) {
+  const nouveau = cible === "nouveau";
+  const utilisateur = nouveau ? null : cible;
+
+  const [form, setForm] = useState({
+    fullName: "", email: "", password: "", role: "caissier" as UserRole,
+    pole: "" as Pole | "", poste: "", telephone: "", salaire: "", dateEntree: "", actif: true,
+  });
+  const [erreur, setErreur] = useState<string | null>(null);
+  const [envoi, setEnvoi] = useState(false);
+
+  useEffect(() => {
+    if (!cible) return;
+    setErreur(null);
+    setForm({
+      fullName: utilisateur?.fullName ?? "",
+      email: utilisateur?.email ?? "",
+      password: "",
+      role: utilisateur?.role ?? "caissier",
+      pole: utilisateur?.pole ?? "",
+      poste: utilisateur?.poste ?? "",
+      telephone: utilisateur?.telephone ?? "",
+      salaire: utilisateur?.salaire ? String(utilisateur.salaire) : "",
+      dateEntree: utilisateur?.dateEntree?.slice(0, 10) ?? "",
+      actif: utilisateur?.actif ?? true,
+    });
+  }, [cible, utilisateur]);
+
+  if (!cible) return null;
+
+  const soumettre = async () => {
+    setEnvoi(true);
+    setErreur(null);
+    try {
+      const commun = {
+        fullName: form.fullName.trim(),
+        role: form.role,
+        pole: (form.pole || null) as Pole | null,
+        poste: form.poste.trim() || undefined,
+        telephone: form.telephone.trim() || undefined,
+        salaire: form.salaire ? Number(form.salaire) : undefined,
+        dateEntree: form.dateEntree || undefined,
+      };
+      if (utilisateur) {
+        await modifierUtilisateur(utilisateur.id, { ...commun, actif: form.actif });
+      } else {
+        await creerUtilisateur({ ...commun, email: form.email.trim(), password: form.password });
+      }
+      onSucces();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Enregistrement impossible.");
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  const valide =
+    form.fullName.trim() &&
+    (utilisateur || (form.email.trim() && form.password.length >= 8));
+
+  return (
+    <Modale
+      ouverte
+      titre={nouveau ? "Nouveau compte" : `Modifier — ${utilisateur?.fullName}`}
+      onFermer={onFermer}
+      taille="lg"
+    >
+      <Erreur message={erreur} />
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <Champ label="Nom complet">
+            <Saisie
+              value={form.fullName}
+              onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+              autoFocus
+            />
+          </Champ>
+        </div>
+
+        <Champ label="Identifiant (e-mail)" aide={utilisateur ? "Non modifiable après création." : undefined}>
+          <Saisie
+            type="email" value={form.email} disabled={!!utilisateur}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            placeholder="prenom.nom@eden.cg"
+          />
+        </Champ>
+
+        {nouveau && (
+          <Champ label="Mot de passe initial" aide="8 caractères minimum. À communiquer à l'employé.">
+            <Saisie
+              type="text" value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+            />
+          </Champ>
+        )}
+
+        <Champ label="Rôle">
+          <Liste value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as UserRole })}>
+            {Object.entries(ROLE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </Liste>
+        </Champ>
+
+        <Champ label="Pôle de rattachement" aide="« Les deux » pour un poste transversal.">
+          <Liste value={form.pole} onChange={(e) => setForm({ ...form, pole: e.target.value as Pole | "" })}>
+            <option value="">Les deux pôles</option>
+            <option value="MULTI_SERVICES">EDEN MULTI-SERVICES</option>
+            <option value="FOOD">EDEN FOOD</option>
+          </Liste>
+        </Champ>
+
+        <Champ label="Poste">
+          <Saisie
+            value={form.poste} onChange={(e) => setForm({ ...form, poste: e.target.value })}
+            placeholder="Ex. : Agent polyvalent caisse / vente"
+          />
+        </Champ>
+
+        <Champ label="Téléphone">
+          <Saisie value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} />
+        </Champ>
+
+        <Champ label="Salaire mensuel (FCFA)">
+          <Saisie
+            type="number" min={0} value={form.salaire}
+            onChange={(e) => setForm({ ...form, salaire: e.target.value })}
+          />
+        </Champ>
+
+        <Champ label="Date d'entrée">
+          <Saisie
+            type="date" value={form.dateEntree}
+            onChange={(e) => setForm({ ...form, dateEntree: e.target.value })}
+          />
+        </Champ>
       </div>
 
-      {showModal && (
-        <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-              <h3 className="text-lg font-bold text-gray-900">Inviter un membre</h3>
-              <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button>
-            </div>
-            <form onSubmit={handleAdd} className="p-6 space-y-4">
-              {formError && <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-2 rounded text-sm">{formError}</div>}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">E-mail</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Mail className="h-5 w-5 text-gray-400" /></div>
-                  <input type="email" required value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="block w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-xl text-sm" placeholder="employe@exemple.com" />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Lock className="h-5 w-5 text-gray-400" /></div>
-                  <input type="text" required minLength={6} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className="block w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-xl text-sm" placeholder="Au moins 6 caractères" />
-                </div>
-                <p className="text-xs text-gray-400 mt-1">Le membre se connectera avec cet e-mail + ce mot de passe.</p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Nom (optionnel)</label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><User className="h-5 w-5 text-gray-400" /></div>
-                  <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="block w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-xl text-sm" placeholder="Prénom Nom" />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Rôle</label>
-                <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as any })} className="w-full border-gray-300 rounded-lg shadow-sm">
-                  <option value="staff">Staff (accès limité)</option>
-                  <option value="admin">Administrateur (accès complet)</option>
-                  <option value="employee">Employé (pointage uniquement)</option>
-                </select>
-              </div>
-              {form.role === "employee" && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Lié à quel employé du planning ?</label>
-                  <select value={form.employeeId} onChange={e => setForm({ ...form, employeeId: e.target.value })} className="w-full border-gray-300 rounded-lg shadow-sm">
-                    <option value="">Choisir...</option>
-                    {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
-                  </select>
-                  <p className="text-xs text-gray-400 mt-1">Son écran de pointage sera automatiquement le sien, sans liste à choisir.</p>
-                </div>
-              )}
-              <button type="submit" disabled={saving} className="w-full py-2.5 bg-indigo-600 text-white rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50">{saving ? "Création..." : "Créer le membre"}</button>
-            </form>
+      <div className="p-3 mt-4 bg-gray-50 rounded-lg">
+        <p className="text-xs font-medium text-gray-700 mb-1.5">
+          Droits associés au rôle « {ROLE_LABELS[form.role]} »
+        </p>
+        <ul className="space-y-1">
+          {DROITS[form.role].map((d) => (
+            <li key={d} className="flex gap-2 text-xs text-gray-600">
+              <span className="text-indigo-500">•</span>{d}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {utilisateur && (
+        <label className="flex items-center gap-2 mt-4 text-sm text-gray-700">
+          <input
+            type="checkbox" checked={form.actif}
+            onChange={(e) => setForm({ ...form, actif: e.target.checked })}
+            className="h-4 w-4 rounded accent-indigo-600"
+          />
+          Compte actif
+          <span className="text-xs text-gray-500">
+            — désactiver coupe l'accès sans effacer l'historique des ventes.
+          </span>
+        </label>
+      )}
+
+      <div className="flex gap-2 mt-5">
+        <Bouton variante="secondaire" onClick={onFermer} className="flex-1">Annuler</Bouton>
+        <Bouton onClick={soumettre} chargement={envoi} disabled={!valide} className="flex-1">
+          {nouveau ? "Créer le compte" : "Enregistrer"}
+        </Bouton>
+      </div>
+    </Modale>
+  );
+}
+
+function ModaleMotDePasse({
+  utilisateur, onFermer,
+}: { utilisateur: Profile | null; onFermer: () => void }) {
+  const [motDePasse, setMotDePasse] = useState("");
+  const [erreur, setErreur] = useState<string | null>(null);
+  const [envoi, setEnvoi] = useState(false);
+  const [fait, setFait] = useState(false);
+  const [copie, setCopie] = useState(false);
+
+  useEffect(() => { setMotDePasse(""); setErreur(null); setFait(false); setCopie(false); }, [utilisateur]);
+
+  if (!utilisateur) return null;
+
+  const soumettre = async () => {
+    setEnvoi(true);
+    setErreur(null);
+    try {
+      await reinitialiserMotDePasse(utilisateur.id, motDePasse);
+      setFait(true);
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Réinitialisation impossible.");
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  const copier = () => {
+    void navigator.clipboard.writeText(motDePasse).then(() => {
+      setCopie(true);
+      window.setTimeout(() => setCopie(false), 2000);
+    });
+  };
+
+  return (
+    <Modale ouverte titre={`Mot de passe — ${utilisateur.fullName}`} onFermer={onFermer}>
+      <Erreur message={erreur} />
+
+      {fait ? (
+        <div className="space-y-4">
+          <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-900">
+            Mot de passe réinitialisé. Communiquez-le à l'employé — il ne sera plus affiché après
+            la fermeture de cette fenêtre.
           </div>
+          <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg font-mono text-sm">
+            <span className="flex-1 break-all">{motDePasse}</span>
+            <button onClick={copier} className="p-1.5 rounded hover:bg-gray-200 shrink-0" title="Copier">
+              {copie ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4 text-gray-500" />}
+            </button>
+          </div>
+          <Bouton onClick={onFermer} className="w-full">Fermer</Bouton>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <Champ label="Nouveau mot de passe" aide="8 caractères minimum.">
+            <Saisie
+              type="text" value={motDePasse}
+              onChange={(e) => setMotDePasse(e.target.value)} autoFocus
+            />
+          </Champ>
+          <Bouton
+            onClick={soumettre} chargement={envoi}
+            disabled={motDePasse.length < 8} icone={KeyRound} className="w-full"
+          >
+            Réinitialiser le mot de passe
+          </Bouton>
         </div>
       )}
-    </Layout>
+    </Modale>
   );
 }

@@ -1,0 +1,635 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Search, Plus, Minus, Trash2, ShoppingCart, Check, Printer, X, Store,
+  UtensilsCrossed, Package, UserPlus,
+} from "lucide-react";
+import Layout from "../components/Layout";
+import {
+  PageHeader, Card, Bouton, Saisie, Liste, Champ, Erreur, Chargement, Badge, Modale, Vide,
+} from "../components/ui";
+import {
+  getProduits, getPacks, getCaisseCourante, enregistrerVente, getClients, creerClient,
+} from "../services/db";
+import { fcfa, nombre, dateHeure } from "../lib/format";
+import { cn } from "../lib/utils";
+import {
+  PAYMENT_LABELS, POLE_LABELS,
+  type Pole, type Product, type Pack, type Customer, type PaymentMethod,
+} from "../types";
+import { useAuth } from "../contexts/AuthContext";
+
+interface LignePanier {
+  cle: string;
+  productId?: number;
+  packId?: number;
+  libelle: string;
+  prixUnitaire: number;
+  quantite: number;
+  /** Stock disponible, pour empêcher de dépasser au comptoir. null = non suivi. */
+  stockDisponible: number | null;
+}
+
+interface TicketEmis {
+  numeroRecu: string;
+  total: number;
+  lignes: LignePanier[];
+  remise: number;
+  paiement: PaymentMethod;
+  pole: Pole;
+  date: string;
+}
+
+/** §5.2 Enregistrement des ventes — écran de caisse. */
+export default function Vente() {
+  const { profil } = useAuth();
+
+  // Le pôle par défaut est celui de l'employé ; la responsable, rattachée aux
+  // deux, démarre sur Multi-Services et bascule librement.
+  const [pole, setPole] = useState<Pole>(profil?.pole ?? "MULTI_SERVICES");
+  const [produits, setProduits] = useState<Product[]>([]);
+  const [packs, setPacks] = useState<Pack[]>([]);
+  const [caisseOuverte, setCaisseOuverte] = useState<boolean | null>(null);
+  const [chargement, setChargement] = useState(true);
+
+  const [recherche, setRecherche] = useState("");
+  const [categorieActive, setCategorieActive] = useState<string>("");
+  const [panier, setPanier] = useState<LignePanier[]>([]);
+
+  const [remise, setRemise] = useState("");
+  const [paiement, setPaiement] = useState<PaymentMethod>("especes");
+  const [numeroTransaction, setNumeroTransaction] = useState("");
+  const [client, setClient] = useState<Customer | null>(null);
+
+  const [erreur, setErreur] = useState<string | null>(null);
+  const [envoi, setEnvoi] = useState(false);
+  const [ticket, setTicket] = useState<TicketEmis | null>(null);
+  const [modaleClient, setModaleClient] = useState(false);
+
+  const champRecherche = useRef<HTMLInputElement>(null);
+
+  // --- Chargement du catalogue et de l'état de la caisse -------------------
+  useEffect(() => {
+    let annule = false;
+    setChargement(true);
+    setPanier([]);
+    setCategorieActive("");
+
+    Promise.all([getProduits({ pole }), getPacks(), getCaisseCourante(pole)])
+      .then(([p, pk, caisse]) => {
+        if (annule) return;
+        setProduits(p);
+        setPacks(pk.filter((x) => x.actif && x.pole === pole));
+        setCaisseOuverte(caisse !== null);
+        setErreur(null);
+      })
+      .catch((e) => { if (!annule) setErreur(e.message); })
+      .finally(() => { if (!annule) setChargement(false); });
+
+    return () => { annule = true; };
+  }, [pole]);
+
+  const categories = useMemo(() => {
+    const noms = new Set(produits.map((p) => p.categorieNom).filter(Boolean) as string[]);
+    return [...noms].sort();
+  }, [produits]);
+
+  const produitsAffiches = useMemo(() => {
+    const terme = recherche.trim().toLowerCase();
+    return produits.filter(
+      (p) =>
+        (!categorieActive || p.categorieNom === categorieActive) &&
+        (!terme || p.nom.toLowerCase().includes(terme))
+    );
+  }, [produits, recherche, categorieActive]);
+
+  const packsAffiches = useMemo(() => {
+    const terme = recherche.trim().toLowerCase();
+    if (categorieActive) return [];
+    return packs.filter((p) => !terme || p.nom.toLowerCase().includes(terme));
+  }, [packs, recherche, categorieActive]);
+
+  // --- Panier --------------------------------------------------------------
+
+  const ajouter = (ligne: Omit<LignePanier, "quantite">) => {
+    setErreur(null);
+    setPanier((actuel) => {
+      const existante = actuel.find((l) => l.cle === ligne.cle);
+      if (existante) {
+        return actuel.map((l) => (l.cle === ligne.cle ? { ...l, quantite: l.quantite + 1 } : l));
+      }
+      return [...actuel, { ...ligne, quantite: 1 }];
+    });
+  };
+
+  const changerQuantite = (cle: string, delta: number) => {
+    setPanier((actuel) =>
+      actuel
+        .map((l) => (l.cle === cle ? { ...l, quantite: l.quantite + delta } : l))
+        .filter((l) => l.quantite > 0)
+    );
+  };
+
+  const retirer = (cle: string) => setPanier((a) => a.filter((l) => l.cle !== cle));
+
+  const sousTotal = panier.reduce((s, l) => s + l.prixUnitaire * l.quantite, 0);
+  const remiseNum = Math.min(Math.max(0, Number(remise) || 0), sousTotal);
+  const total = sousTotal - remiseNum;
+
+  // Le dépassement de stock est bloqué ici *et* par l'API : l'écran évite au
+  // caissier une erreur au moment de valider, l'API garantit la règle.
+  const lignesEnDepassement = panier.filter(
+    (l) => l.stockDisponible !== null && l.quantite > l.stockDisponible
+  );
+
+  const valider = async () => {
+    setErreur(null);
+    setEnvoi(true);
+    try {
+      const resultat = await enregistrerVente({
+        pole,
+        items: panier.map((l) => ({
+          productId: l.productId, packId: l.packId, quantite: l.quantite,
+        })),
+        paymentMethod: paiement,
+        numeroTransaction: numeroTransaction.trim() || undefined,
+        remise: remiseNum,
+        customerId: client?.id ?? null,
+      });
+
+      setTicket({
+        numeroRecu: resultat.numeroRecu,
+        total: resultat.total,
+        lignes: panier,
+        remise: remiseNum,
+        paiement,
+        pole,
+        date: new Date().toISOString(),
+      });
+
+      // Remise à zéro pour la vente suivante.
+      setPanier([]);
+      setRemise("");
+      setNumeroTransaction("");
+      setClient(null);
+      setRecherche("");
+      // Le stock affiché a changé : on le recharge sans bloquer l'écran.
+      getProduits({ pole }).then(setProduits).catch(() => {});
+      champRecherche.current?.focus();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Enregistrement impossible.");
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <Layout>
+      <PageHeader titre="Vendre" sousTitre="Enregistrement des ventes et encaissement">
+        <div className="inline-flex rounded-lg border border-gray-300 bg-white p-0.5">
+          {(["MULTI_SERVICES", "FOOD"] as Pole[]).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPole(p)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
+                pole === p ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-100"
+              )}
+            >
+              {p === "MULTI_SERVICES" ? <Store className="h-4 w-4" /> : <UtensilsCrossed className="h-4 w-4" />}
+              {p === "MULTI_SERVICES" ? "Multi-Services" : "Food"}
+            </button>
+          ))}
+        </div>
+      </PageHeader>
+
+      <Erreur message={erreur} />
+
+      {caisseOuverte === false && (
+        <div className="flex flex-wrap items-center gap-3 p-4 mb-5 bg-amber-50 border border-amber-200 rounded-lg">
+          <p className="text-sm text-amber-900 flex-1 min-w-[240px]">
+            La caisse de {POLE_LABELS[pole]} n'est pas ouverte. Ouvrez-la pour pouvoir encaisser :
+            c'est elle qui permet de rapprocher les recettes du fond de caisse en fin de journée.
+          </p>
+          <Bouton variante="secondaire" onClick={() => (window.location.href = "/caisse")}>
+            Ouvrir la caisse
+          </Bouton>
+        </div>
+      )}
+
+      {chargement ? (
+        <Chargement texte="Chargement du catalogue…" />
+      ) : (
+        <div className="grid gap-5 lg:grid-cols-[1fr_380px]">
+          {/* ================= Catalogue ================= */}
+          <div className="space-y-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Saisie
+                ref={champRecherche}
+                value={recherche}
+                onChange={(e) => setRecherche(e.target.value)}
+                placeholder="Rechercher un article ou une prestation…"
+                className="pl-9"
+                autoFocus
+              />
+            </div>
+
+            {categories.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                <button
+                  onClick={() => setCategorieActive("")}
+                  className={cn(
+                    "px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap border transition-colors",
+                    !categorieActive
+                      ? "bg-indigo-600 text-white border-indigo-600"
+                      : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+                  )}
+                >
+                  Tout
+                </button>
+                {categories.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setCategorieActive(c)}
+                    className={cn(
+                      "px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap border transition-colors",
+                      categorieActive === c
+                        ? "bg-indigo-600 text-white border-indigo-600"
+                        : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+                    )}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {produitsAffiches.length === 0 && packsAffiches.length === 0 ? (
+              <Card><Vide titre="Aucun article ne correspond" icone={Package} /></Card>
+            ) : (
+              <div className="grid gap-2.5 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4">
+                {packsAffiches.map((p) => (
+                  <button
+                    key={`pack-${p.id}`}
+                    onClick={() =>
+                      ajouter({
+                        cle: `pack-${p.id}`, packId: p.id, libelle: p.nom,
+                        prixUnitaire: p.prixVente, stockDisponible: null,
+                      })
+                    }
+                    className="text-left p-3 bg-white rounded-xl border-2 border-indigo-200 hover:border-indigo-500 transition-colors"
+                  >
+                    <Badge ton="info">Pack</Badge>
+                    <p className="mt-1.5 text-sm font-medium text-gray-900 line-clamp-2">{p.nom}</p>
+                    <p className="mt-1 text-sm font-semibold text-amber-600 tabulaire">{fcfa(p.prixVente)}</p>
+                  </button>
+                ))}
+
+                {produitsAffiches.map((p) => {
+                  const enRupture = p.gereStock && p.quantite <= 0;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() =>
+                        ajouter({
+                          cle: `prod-${p.id}`, productId: p.id, libelle: p.nom,
+                          prixUnitaire: p.prixVente,
+                          stockDisponible: p.gereStock ? p.quantite : null,
+                        })
+                      }
+                      disabled={enRupture}
+                      className={cn(
+                        "text-left p-3 bg-white rounded-xl border transition-colors",
+                        enRupture
+                          ? "border-gray-200 opacity-50 cursor-not-allowed"
+                          : "border-gray-200 hover:border-indigo-500"
+                      )}
+                    >
+                      <p className="text-sm font-medium text-gray-900 line-clamp-2 min-h-[2.5rem]">{p.nom}</p>
+                      <p className="mt-1 text-sm font-semibold text-amber-600 tabulaire">{fcfa(p.prixVente)}</p>
+                      {p.gereStock && (
+                        <p className={cn("mt-0.5 text-xs", enRupture ? "text-red-600" : "text-gray-500")}>
+                          {enRupture ? "Rupture" : `${nombre(p.quantite)} en stock`}
+                        </p>
+                      )}
+                      {!p.gereStock && <p className="mt-0.5 text-xs text-gray-400">Prestation</p>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ================= Panier ================= */}
+          <div className="lg:sticky lg:top-0 lg:self-start">
+            <Card className="flex flex-col max-h-[calc(100vh-8rem)]">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-200">
+                <ShoppingCart className="h-4 w-4 text-gray-500" />
+                <h2 className="font-semibold text-gray-900">Ticket en cours</h2>
+                {panier.length > 0 && (
+                  <button
+                    onClick={() => setPanier([])}
+                    className="ml-auto text-xs text-gray-500 hover:text-red-600"
+                  >
+                    Vider
+                  </button>
+                )}
+              </div>
+
+              {panier.length === 0 ? (
+                <p className="px-4 py-10 text-sm text-center text-gray-500">
+                  Sélectionnez des articles pour composer le ticket.
+                </p>
+              ) : (
+                <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+                  {panier.map((l) => {
+                    const depasse = l.stockDisponible !== null && l.quantite > l.stockDisponible;
+                    return (
+                      <div key={l.cle} className="p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-sm font-medium text-gray-900 flex-1">{l.libelle}</p>
+                          <button
+                            onClick={() => retirer(l.cle)}
+                            className="p-1 -m-1 text-gray-400 hover:text-red-600"
+                            aria-label={`Retirer ${l.libelle}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => changerQuantite(l.cle, -1)}
+                              className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-50"
+                              aria-label="Diminuer"
+                            >
+                              <Minus className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="w-9 text-center text-sm font-medium tabulaire">{l.quantite}</span>
+                            <button
+                              onClick={() => changerQuantite(l.cle, 1)}
+                              className="p-1.5 rounded-md border border-gray-300 hover:bg-gray-50"
+                              aria-label="Augmenter"
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <span className="text-sm font-semibold text-gray-900 tabulaire">
+                            {fcfa(l.prixUnitaire * l.quantite)}
+                          </span>
+                        </div>
+                        {depasse && (
+                          <p className="mt-1.5 text-xs text-red-600">
+                            Stock insuffisant : {nombre(l.stockDisponible!)} disponible(s).
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {panier.length > 0 && (
+                <div className="shrink-0 border-t border-gray-200 p-4 space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Sous-total</span>
+                    <span className="tabulaire">{fcfa(sousTotal)}</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Champ label="Remise (FCFA)">
+                      <Saisie
+                        type="number" min={0} max={sousTotal} value={remise}
+                        onChange={(e) => setRemise(e.target.value)}
+                        placeholder="0" className="py-2"
+                      />
+                    </Champ>
+                    <Champ label="Paiement">
+                      <Liste
+                        value={paiement}
+                        onChange={(e) => setPaiement(e.target.value as PaymentMethod)}
+                        className="py-2"
+                      >
+                        {Object.entries(PAYMENT_LABELS).map(([v, label]) => (
+                          <option key={v} value={v}>{label}</option>
+                        ))}
+                      </Liste>
+                    </Champ>
+                  </div>
+
+                  {paiement !== "especes" && (
+                    <Champ label="N° de transaction" aide="Référence Mobile Money ou bancaire">
+                      <Saisie
+                        value={numeroTransaction}
+                        onChange={(e) => setNumeroTransaction(e.target.value)}
+                        placeholder="Facultatif" className="py-2"
+                      />
+                    </Champ>
+                  )}
+
+                  <button
+                    onClick={() => setModaleClient(true)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg border border-dashed border-gray-300 hover:bg-gray-50"
+                  >
+                    <UserPlus className="h-4 w-4 text-gray-400 shrink-0" />
+                    <span className={client ? "text-gray-900 font-medium truncate" : "text-gray-500"}>
+                      {client ? client.nom : "Rattacher un client (facultatif)"}
+                    </span>
+                    {client && (
+                      <X
+                        className="h-4 w-4 text-gray-400 ml-auto shrink-0"
+                        onClick={(e) => { e.stopPropagation(); setClient(null); }}
+                      />
+                    )}
+                  </button>
+
+                  <div className="flex justify-between items-baseline pt-2 border-t border-gray-200">
+                    <span className="font-semibold text-gray-900">Total</span>
+                    <span className="text-2xl font-bold text-amber-600 tabulaire">{fcfa(total)}</span>
+                  </div>
+
+                  <Bouton
+                    onClick={valider}
+                    chargement={envoi}
+                    disabled={!caisseOuverte || lignesEnDepassement.length > 0}
+                    icone={Check}
+                    className="w-full py-3"
+                  >
+                    Encaisser {fcfa(total)}
+                  </Bouton>
+                </div>
+              )}
+            </Card>
+          </div>
+        </div>
+      )}
+
+      <ModaleClient
+        ouverte={modaleClient}
+        onFermer={() => setModaleClient(false)}
+        onChoisir={(c) => { setClient(c); setModaleClient(false); }}
+      />
+
+      <ModaleTicket ticket={ticket} onFermer={() => setTicket(null)} />
+    </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sélection / création rapide d'un client (§5.9)
+// ---------------------------------------------------------------------------
+
+function ModaleClient({
+  ouverte, onFermer, onChoisir,
+}: { ouverte: boolean; onFermer: () => void; onChoisir: (c: Customer) => void }) {
+  const [recherche, setRecherche] = useState("");
+  const [clients, setClients] = useState<Customer[]>([]);
+  const [nouveauNom, setNouveauNom] = useState("");
+  const [nouveauTel, setNouveauTel] = useState("");
+  const [erreur, setErreur] = useState<string | null>(null);
+  const [envoi, setEnvoi] = useState(false);
+
+  useEffect(() => {
+    if (!ouverte) return;
+    // Recherche différée : évite une requête par frappe au clavier.
+    const timer = window.setTimeout(() => {
+      getClients(recherche).then(setClients).catch((e) => setErreur(e.message));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [ouverte, recherche]);
+
+  const creer = async () => {
+    if (!nouveauNom.trim()) return;
+    setEnvoi(true);
+    try {
+      const c = await creerClient({ nom: nouveauNom.trim(), telephone: nouveauTel.trim() || null });
+      setNouveauNom("");
+      setNouveauTel("");
+      onChoisir(c);
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Création impossible.");
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <Modale ouverte={ouverte} titre="Rattacher un client" onFermer={onFermer}>
+      <Erreur message={erreur} />
+
+      <Saisie
+        value={recherche}
+        onChange={(e) => setRecherche(e.target.value)}
+        placeholder="Rechercher par nom ou téléphone…"
+      />
+
+      <div className="mt-3 max-h-56 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded-lg">
+        {clients.length === 0 ? (
+          <p className="p-4 text-sm text-center text-gray-500">Aucun client trouvé.</p>
+        ) : (
+          clients.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => onChoisir(c)}
+              className="w-full px-4 py-2.5 text-left hover:bg-gray-50"
+            >
+              <p className="text-sm font-medium text-gray-900">{c.nom}</p>
+              {c.telephone && <p className="text-xs text-gray-500">{c.telephone}</p>}
+            </button>
+          ))
+        )}
+      </div>
+
+      <div className="mt-5 pt-5 border-t border-gray-200">
+        <p className="text-sm font-medium text-gray-700 mb-3">Ou créer un nouveau client</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Champ label="Nom">
+            <Saisie value={nouveauNom} onChange={(e) => setNouveauNom(e.target.value)} placeholder="Nom du client" />
+          </Champ>
+          <Champ label="Téléphone">
+            <Saisie value={nouveauTel} onChange={(e) => setNouveauTel(e.target.value)} placeholder="06 000 00 00" />
+          </Champ>
+        </div>
+        <Bouton
+          onClick={creer}
+          chargement={envoi}
+          disabled={!nouveauNom.trim()}
+          icone={Plus}
+          className="mt-3 w-full"
+          variante="secondaire"
+        >
+          Créer et rattacher
+        </Bouton>
+      </div>
+    </Modale>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ticket de caisse (§5.2 « Numéro de reçu »)
+// ---------------------------------------------------------------------------
+
+function ModaleTicket({ ticket, onFermer }: { ticket: TicketEmis | null; onFermer: () => void }) {
+  if (!ticket) return null;
+
+  const sousTotal = ticket.lignes.reduce((s, l) => s + l.prixUnitaire * l.quantite, 0);
+
+  return (
+    <Modale ouverte titre="Vente enregistrée" onFermer={onFermer}>
+      <div className="flex items-center gap-3 p-3 mb-5 bg-green-50 border border-green-200 rounded-lg">
+        <Check className="h-5 w-5 text-green-600 shrink-0" />
+        <p className="text-sm text-green-900">
+          Reçu <strong>{ticket.numeroRecu}</strong> — {fcfa(ticket.total)} encaissés.
+        </p>
+      </div>
+
+      {/* Zone imprimable : la barre d'actions en est exclue (classe sans-impression). */}
+      <div className="border border-gray-200 rounded-lg p-4 text-sm">
+        <div className="text-center pb-3 border-b border-dashed border-gray-300">
+          <p className="font-bold tracking-wide">EDEN MULTI-SERVICES</p>
+          <p className="text-xs text-gray-500 mt-0.5">{POLE_LABELS[ticket.pole]}</p>
+          <p className="text-xs text-gray-500 mt-1.5">{ticket.numeroRecu}</p>
+          <p className="text-xs text-gray-500">{dateHeure(ticket.date)}</p>
+        </div>
+
+        <div className="py-3 space-y-1.5 border-b border-dashed border-gray-300">
+          {ticket.lignes.map((l) => (
+            <div key={l.cle} className="flex justify-between gap-3">
+              <span className="flex-1">
+                {l.libelle}
+                <span className="text-gray-500"> × {l.quantite}</span>
+              </span>
+              <span className="tabulaire">{fcfa(l.prixUnitaire * l.quantite)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="pt-3 space-y-1">
+          <div className="flex justify-between text-gray-600">
+            <span>Sous-total</span><span className="tabulaire">{fcfa(sousTotal)}</span>
+          </div>
+          {ticket.remise > 0 && (
+            <div className="flex justify-between text-gray-600">
+              <span>Remise</span><span className="tabulaire">− {fcfa(ticket.remise)}</span>
+            </div>
+          )}
+          <div className="flex justify-between font-bold text-base pt-1">
+            <span>Total</span><span className="tabulaire">{fcfa(ticket.total)}</span>
+          </div>
+          <div className="flex justify-between text-gray-600 pt-1">
+            <span>Paiement</span><span>{PAYMENT_LABELS[ticket.paiement]}</span>
+          </div>
+        </div>
+
+        <p className="mt-4 text-center text-xs text-gray-500">Merci de votre confiance.</p>
+      </div>
+
+      <div className="flex gap-2 mt-5 sans-impression">
+        <Bouton variante="secondaire" icone={Printer} onClick={() => window.print()} className="flex-1">
+          Imprimer
+        </Bouton>
+        <Bouton onClick={onFermer} className="flex-1">Vente suivante</Bouton>
+      </div>
+    </Modale>
+  );
+}

@@ -1,132 +1,78 @@
-import React, { useState } from "react";
+import { useState, type FormEvent } from "react";
+import { Sprout, LogIn } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
-import { useNavigate } from "react-router-dom";
-import { CreditCard, Mail } from "lucide-react";
+import { Bouton, Champ, Saisie, Erreur } from "../components/ui";
 
+/**
+ * §5.1 : chaque employé dispose d'un identifiant et d'un mot de passe.
+ * Les comptes sont créés par l'administrateur depuis l'écran Personnel — pas
+ * d'auto-inscription, une plateforme de contrôle interne ne peut pas laisser
+ * n'importe qui se créer un accès.
+ */
 export default function Login() {
-  const { signInWithGoogle, signInWithEmail, signUpWithEmail } = useAuth();
-  const navigate = useNavigate();
-  const [error, setError] = useState("");
-  const [info, setInfo] = useState("");
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const { connexion, erreurProfil } = useAuth();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [motDePasse, setMotDePasse] = useState("");
+  const [erreur, setErreur] = useState<string | null>(null);
+  const [envoi, setEnvoi] = useState(false);
 
-  const handleGoogle = async () => {
-    try {
-      setError("");
-      await signInWithGoogle(); // redirects to Google; user comes back on /dashboard
-    } catch (err: any) {
-      setError("Échec de la connexion : " + err.message);
-    }
-  };
-
-  const handleEmail = async (e: React.FormEvent) => {
+  const soumettre = async (e: FormEvent) => {
     e.preventDefault();
-    setError("");
-    setInfo("");
-    setSubmitting(true);
+    setErreur(null);
+    setEnvoi(true);
     try {
-      if (mode === "signup") {
-        await signUpWithEmail(email, password);
-        // If email confirmation is on, no session is returned yet.
-        try {
-          await signInWithEmail(email, password);
-          navigate("/dashboard");
-        } catch {
-          setInfo("Compte créé. Vérifiez votre boîte mail pour confirmer, puis connectez-vous.");
-          setMode("signin");
-        }
-      } else {
-        await signInWithEmail(email, password);
-        navigate("/dashboard");
-      }
-    } catch (err: any) {
-      setError(err.message || "Échec de la connexion.");
+      await connexion(email.trim(), motDePasse);
+    } catch (err) {
+      setErreur(err instanceof Error ? err.message : "Connexion impossible.");
     } finally {
-      setSubmitting(false);
+      setEnvoi(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="flex justify-center">
-          <CreditCard className="h-12 w-12 text-indigo-600" />
-        </div>
-        <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-          Connexion à FIDELY
-        </h2>
-        <p className="mt-2 text-center text-sm text-gray-600">
-          Gérez le programme de fidélité de votre entreprise
-        </p>
-      </div>
-
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
-          {error && (
-            <div className="mb-4 bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded text-sm" role="alert">
-              {error}
-            </div>
-          )}
-          {info && (
-            <div className="mb-4 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded text-sm">
-              {info}
-            </div>
-          )}
-
-          <button
-            onClick={handleGoogle}
-            className="w-full flex justify-center items-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-          >
-            <Mail className="mr-2 h-5 w-5 text-indigo-600" />
-            Continuer avec Google
-          </button>
-
-          <div className="my-6 flex items-center">
-            <div className="flex-1 border-t border-gray-200" />
-            <span className="px-3 text-xs text-gray-400 uppercase">ou</span>
-            <div className="flex-1 border-t border-gray-200" />
+    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        <div className="flex flex-col items-center mb-8">
+          <div className="p-3 bg-indigo-950 rounded-2xl">
+            <Sprout className="h-8 w-8 text-indigo-400" />
           </div>
-
-          <form onSubmit={handleEmail} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">E-mail</label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
-                placeholder="vous@exemple.com"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
-              <input
-                type="password"
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
-                placeholder="••••••••"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-            >
-              {submitting ? "..." : mode === "signin" ? "Se connecter" : "Créer mon compte"}
-            </button>
-          </form>
-
-          <p className="mt-4 text-center text-xs text-gray-400">
-            Accès réservé. Contactez l'administrateur pour obtenir vos identifiants.
-          </p>
+          <h1 className="mt-4 text-2xl font-bold text-white tracking-wide">EDEN MULTI-SERVICES</h1>
+          <p className="mt-1 text-sm text-gray-500">Plateforme de gestion et de contrôle interne</p>
         </div>
+
+        <form onSubmit={soumettre} className="bg-white rounded-xl p-6 shadow-xl space-y-4">
+          <Erreur message={erreur ?? erreurProfil} />
+
+          <Champ label="Identifiant (e-mail)">
+            <Saisie
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+              placeholder="prenom.nom@eden.cg"
+              required
+              autoFocus
+            />
+          </Champ>
+
+          <Champ label="Mot de passe">
+            <Saisie
+              type="password"
+              value={motDePasse}
+              onChange={(e) => setMotDePasse(e.target.value)}
+              autoComplete="current-password"
+              required
+            />
+          </Champ>
+
+          <Bouton type="submit" icone={LogIn} chargement={envoi} className="w-full">
+            Se connecter
+          </Bouton>
+
+          <p className="text-xs text-center text-gray-500 pt-1">
+            Vous n'avez pas d'accès ? Contactez l'administrateur de la plateforme.
+          </p>
+        </form>
       </div>
     </div>
   );

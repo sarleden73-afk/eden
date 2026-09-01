@@ -1,12 +1,11 @@
 {
-  "name": "JEANNY EMPIRE BEAUTY",
-  "short_name": "Jeanny Beauty",
-  "description": "Fidélité, caisse et gestion pour JEANNY EMPIRE BEAUTY",
-  "start_url": "/dashboard",
+  "name": "EDEN MULTI-SERVICES",
+  "short_name": "EDEN",
+  "description": "Plateforme de gestion et de contrôle interne",
+  "start_url": "/tableau-de-bord",
   "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#0a0a0a",
-  "icons": [
-    { "src": "/logo.jpg", "sizes": "1080x1080", "type": "image/jpeg", "purpose": "any maskable" }
-  ]
+  "background_color": "#0b0a07",
+  "theme_color": "#0b0a07",
+  "orientation": "any",
+  "lang": "fr"
 }

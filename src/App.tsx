@@ -1,179 +1,90 @@
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import React from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
-import { getBusiness } from "./services/db";
-import Dashboard from "./pages/Dashboard";
+import type { UserRole } from "./types";
+
 import Login from "./pages/Login";
-import Programs from "./pages/Programs";
-import Customers from "./pages/Customers";
-import Scanner from "./pages/Scanner";
-import CustomerView from "./pages/CustomerView";
-import Employees from "./pages/Employees";
-import Appointments from "./pages/Appointments";
-import Services from "./pages/Services";
-import Sale from "./pages/Sale";
-import Categories from "./pages/Categories";
-import Reports from "./pages/Reports";
-import Accounting from "./pages/Accounting";
+import Dashboard from "./pages/Dashboard";
+import Vente from "./pages/Vente";
+import Caisse from "./pages/Caisse";
+import Ventes from "./pages/Ventes";
+import Commandes from "./pages/Commandes";
+import Clients from "./pages/Clients";
+import Catalogue from "./pages/Catalogue";
+import Stocks from "./pages/Stocks";
+import Achats from "./pages/Achats";
+import Depenses from "./pages/Depenses";
+import Rapports from "./pages/Rapports";
+import Comptabilite from "./pages/Comptabilite";
 import Personnel from "./pages/Personnel";
-import Inventory from "./pages/Inventory";
-import Reviews from "./pages/Reviews";
-import Avis from "./pages/Avis";
-import PublicBooking from "./pages/PublicBooking";
-import React, { useEffect, useState } from "react";
+import Journal from "./pages/Journal";
+import Parametres from "./pages/Parametres";
 
-function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-  const [role, setRole] = useState<string | null>(null);
-  const [roleLoading, setRoleLoading] = useState(true);
+const TOUS: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
+const VALIDENT: UserRole[] = ["admin", "responsable"];
+const ADMIN: UserRole[] = ["admin"];
 
-  useEffect(() => {
-    if (!user) { setRoleLoading(false); return; }
-    setRoleLoading(true);
-    getBusiness(user.id)
-      .then(rest => setRole(rest?.role ?? null))
-      .finally(() => setRoleLoading(false));
-  }, [user]);
+function Ecran() {
+  return (
+    <div className="flex items-center justify-center h-screen bg-gray-50">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500" />
+    </div>
+  );
+}
 
-  if (loading || (user && roleLoading)) return <div className="flex justify-center items-center h-screen bg-gray-50"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-500"></div></div>;
+/**
+ * Garde de route. Le filtrage par rôle ici n'est qu'un confort d'interface :
+ * la règle qui fait foi est appliquée par l'API sur chaque appel (src/api.ts).
+ * Un utilisateur qui forcerait une URL verrait un écran vide et des erreurs 403,
+ * pas des données auxquelles il n'a pas droit.
+ */
+function Protege({ roles, children }: { roles: UserRole[]; children: React.ReactNode }) {
+  const { session, profil, loading } = useAuth();
 
-  if (!user) {
-    return <Navigate to="/" />;
-  }
+  if (loading) return <Ecran />;
+  if (!session || !profil) return <Navigate to="/connexion" replace />;
+  if (!roles.includes(profil.role)) return <Navigate to="/tableau-de-bord" replace />;
 
-  // Le rôle 'employee' n'a accès qu'à l'écran de pointage : toute autre page
-  // redirige immédiatement (miroir du filtrage de nav dans Layout.tsx et du
-  // blocage côté API dans requireOwnedBusiness).
-  if (role === "employee" && location.pathname !== "/employees") {
-    return <Navigate to="/employees" replace />;
-  }
+  return <>{children}</>;
+}
 
-  return children;
+/** Redirige un utilisateur déjà connecté loin de l'écran de connexion. */
+function ConnexionOuAccueil() {
+  const { session, profil, loading } = useAuth();
+  if (loading) return <Ecran />;
+  if (session && profil) return <Navigate to="/tableau-de-bord" replace />;
+  return <Login />;
 }
 
 export default function App() {
   return (
-    <Router>
+    <BrowserRouter>
       <AuthProvider>
         <Routes>
-          <Route path="/" element={<Login />} />
-          <Route path="/card/:id" element={<CustomerView />} />
-          <Route path="/avis" element={<Avis />} />
-          <Route path="/reserver" element={<PublicBooking />} />
-          <Route
-            path="/dashboard"
-            element={
-              <PrivateRoute>
-                <Dashboard />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/programs"
-            element={
-              <PrivateRoute>
-                <Programs />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/customers"
-            element={
-              <PrivateRoute>
-                <Customers />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/scanner"
-            element={
-              <PrivateRoute>
-                <Scanner />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/employees"
-            element={
-              <PrivateRoute>
-                <Employees />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/appointments"
-            element={
-              <PrivateRoute>
-                <Appointments />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/services"
-            element={
-              <PrivateRoute>
-                <Services />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/vente"
-            element={
-              <PrivateRoute>
-                <Sale />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/categories"
-            element={
-              <PrivateRoute>
-                <Categories />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/reports"
-            element={
-              <PrivateRoute>
-                <Reports />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/accounting"
-            element={
-              <PrivateRoute>
-                <Accounting />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/personnel"
-            element={
-              <PrivateRoute>
-                <Personnel />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/inventory"
-            element={
-              <PrivateRoute>
-                <Inventory />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/reviews"
-            element={
-              <PrivateRoute>
-                <Reviews />
-              </PrivateRoute>
-            }
-          />
+          <Route path="/connexion" element={<ConnexionOuAccueil />} />
+
+          <Route path="/tableau-de-bord" element={<Protege roles={TOUS}><Dashboard /></Protege>} />
+          <Route path="/vente"          element={<Protege roles={TOUS}><Vente /></Protege>} />
+          <Route path="/caisse"         element={<Protege roles={TOUS}><Caisse /></Protege>} />
+          <Route path="/ventes"         element={<Protege roles={TOUS}><Ventes /></Protege>} />
+          <Route path="/commandes"      element={<Protege roles={TOUS}><Commandes /></Protege>} />
+          <Route path="/clients"        element={<Protege roles={TOUS}><Clients /></Protege>} />
+          <Route path="/catalogue"      element={<Protege roles={TOUS}><Catalogue /></Protege>} />
+          <Route path="/stocks"         element={<Protege roles={TOUS}><Stocks /></Protege>} />
+
+          <Route path="/achats"         element={<Protege roles={VALIDENT}><Achats /></Protege>} />
+          <Route path="/depenses"       element={<Protege roles={TOUS}><Depenses /></Protege>} />
+          <Route path="/rapports"       element={<Protege roles={VALIDENT}><Rapports /></Protege>} />
+          <Route path="/journal"        element={<Protege roles={VALIDENT}><Journal /></Protege>} />
+
+          <Route path="/comptabilite"   element={<Protege roles={ADMIN}><Comptabilite /></Protege>} />
+          <Route path="/personnel"      element={<Protege roles={ADMIN}><Personnel /></Protege>} />
+          <Route path="/parametres"     element={<Protege roles={ADMIN}><Parametres /></Protege>} />
+
+          <Route path="/" element={<Navigate to="/tableau-de-bord" replace />} />
+          <Route path="*" element={<Navigate to="/tableau-de-bord" replace />} />
         </Routes>
       </AuthProvider>
-    </Router>
+    </BrowserRouter>
   );
 }

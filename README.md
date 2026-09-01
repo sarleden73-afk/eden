@@ -166,6 +166,17 @@ L'application est disponible sur <http://localhost:3000>.
 - **Rien n'est jamais supprimé.** Une vente annulée change de statut, garde son
   motif, son auteur et son heure ; le stock est restitué et la caisse
   contre-passée si elle est encore ouverte.
+- **Les périodes sont calculées en heure de Brazzaville** (UTC+1, sans heure
+  d'été), pas dans le fuseau du serveur. Vercel tourne en UTC : sans ce
+  décalage explicite, « aujourd'hui » commencerait à 23 h la veille et une vente
+  passée à 00h30 tomberait dans la journée précédente. Le décalage est la
+  constante `DECALAGE_MINUTES` dans [`src/api.ts`](src/api.ts) — la seule ligne
+  à changer si l'entreprise ouvre ailleurs.
+- **Le tableau de bord s'adapte au rôle.** Caissier et technicien n'ont qu'une
+  « consultation limitée » (§5.1) : ils voient leur propre activité, la caisse
+  de leur pôle et les alertes de stock. Marge, dépenses et bénéfice ne sont pas
+  masqués à l'écran mais absents de la réponse du serveur — une valeur envoyée
+  puis cachée reste lisible dans l'onglet réseau du navigateur.
 
 ---
 

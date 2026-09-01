@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { History, FileDown, ChevronDown, ChevronRight, ShieldAlert } from "lucide-react";
 import Layout from "../components/Layout";
 import {
@@ -147,9 +147,12 @@ export default function Journal() {
               const ouvert = deplie === e.id;
               const aDesDetails = !!(e.avant || e.apres);
 
+              // La clé va sur le fragment, pas sur les <tr> : une entrée dépliée
+              // en produit deux, et React n'accepte qu'un élément clé par entrée
+              // de liste.
               return (
-                <>
-                  <tr key={e.id} className={sensible ? "bg-red-50/30" : "hover:bg-gray-50"}>
+                <Fragment key={e.id}>
+                  <tr className={sensible ? "bg-red-50/30" : "hover:bg-gray-50"}>
                     <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateHeure(e.createdAt)}</td>
                     <td className="px-4 py-3 font-medium text-gray-900">{e.userNom ?? "—"}</td>
                     <td className="px-4 py-3">
@@ -176,7 +179,7 @@ export default function Journal() {
                   </tr>
 
                   {ouvert && (
-                    <tr key={`${e.id}-detail`}>
+                    <tr>
                       <td colSpan={6} className="px-4 py-4 bg-gray-50">
                         <div className="grid gap-4 sm:grid-cols-2">
                           <Etat titre="Avant" valeur={e.avant} />
@@ -185,7 +188,7 @@ export default function Journal() {
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
           </Tableau>

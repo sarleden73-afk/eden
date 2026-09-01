@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, Check, Printer, X, Store,
   UtensilsCrossed, Package, UserPlus,
@@ -42,6 +43,7 @@ interface TicketEmis {
 /** §5.2 Enregistrement des ventes — écran de caisse. */
 export default function Vente() {
   const { profil } = useAuth();
+  const naviguer = useNavigate();
 
   // Le pôle par défaut est celui de l'employé ; la responsable, rattachée aux
   // deux, démarre sur Multi-Services et bascule librement.
@@ -210,7 +212,7 @@ export default function Vente() {
             La caisse de {POLE_LABELS[pole]} n'est pas ouverte. Ouvrez-la pour pouvoir encaisser :
             c'est elle qui permet de rapprocher les recettes du fond de caisse en fin de journée.
           </p>
-          <Bouton variante="secondaire" onClick={() => (window.location.href = "/caisse")}>
+          <Bouton variante="secondaire" onClick={() => naviguer("/caisse")}>
             Ouvrir la caisse
           </Bouton>
         </div>

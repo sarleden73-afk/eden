@@ -344,6 +344,12 @@ export interface CaisseSettings {
 // --- Tableau de bord et rapports (§5.11, §5.12) ----------------------------
 
 export interface DashboardStats {
+  /**
+   * Vrai pour les rôles à consultation limitée (§5.1 : caissier, technicien).
+   * Les chiffres portent alors sur leur seule activité, et marge, dépenses et
+   * bénéfice ne sont pas transmis.
+   */
+  restreint: boolean;
   /** CA par pôle + total (§5.11). */
   caMultiServices: number;
   caFood: number;

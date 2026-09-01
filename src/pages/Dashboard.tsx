@@ -13,6 +13,7 @@ import {
 } from "../components/ui";
 import { getTableauDeBord } from "../services/db";
 import { fcfa, nombre, dateCourte, heure } from "../lib/format";
+import { cn } from "../lib/utils";
 import { POLE_LABELS, type DashboardStats, type PeriodKey } from "../types";
 import { aujourdhui } from "../lib/format";
 
@@ -39,12 +40,22 @@ export default function Dashboard() {
     jour: dateCourte(j.date).slice(0, 5),
     "Multi-Services": j.caMultiServices,
     "Food": j.caFood,
-    "Dépenses": j.depenses,
+    // Les dépenses valent toujours 0 pour un profil restreint : la barre est
+    // retirée plutôt que dessinée à plat, ce qui laisserait croire à une absence
+    // de dépenses au lieu d'une absence de droit.
+    ...(stats?.restreint ? {} : { "Dépenses": j.depenses }),
   }));
 
   return (
     <Layout>
-      <PageHeader titre="Tableau de bord" sousTitre="Vue consolidée des deux pôles">
+      <PageHeader
+        titre="Tableau de bord"
+        sousTitre={
+          stats?.restreint
+            ? "Votre activité, l'état de la caisse et les alertes de stock"
+            : "Vue consolidée des deux pôles"
+        }
+      >
         <SelecteurPeriode
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
@@ -57,40 +68,49 @@ export default function Dashboard() {
         <Chargement />
       ) : stats ? (
         <div className="space-y-6">
-          {/* --- Chiffre d'affaires par pôle et total --- */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {/* --- Chiffre d'affaires --- */}
+          {/* Un profil restreint (caissier, technicien) voit ses propres ventes,
+              sans marge ni bénéfice : le serveur ne les lui transmet pas. */}
+          <div className={cn(
+            "grid gap-4 sm:grid-cols-2",
+            stats.restreint ? "lg:grid-cols-3" : "lg:grid-cols-4"
+          )}>
             <StatCard
               titre={POLE_LABELS.MULTI_SERVICES}
               valeur={fcfa(stats.caMultiServices)}
               icone={Store}
-              detail="Chiffre d'affaires"
+              detail={stats.restreint ? "Vos ventes" : "Chiffre d'affaires"}
             />
             <StatCard
               titre={POLE_LABELS.FOOD}
               valeur={fcfa(stats.caFood)}
               icone={UtensilsCrossed}
-              detail="Chiffre d'affaires"
+              detail={stats.restreint ? "Vos ventes" : "Chiffre d'affaires"}
             />
             <StatCard
-              titre="CA total"
+              titre={stats.restreint ? "Votre total" : "CA total"}
               valeur={fcfa(stats.caTotal)}
               icone={TrendingUp}
               detail={`${nombre(stats.nbVentes)} vente${stats.nbVentes > 1 ? "s" : ""}`}
             />
-            <StatCard
-              titre="Bénéfice estimatif"
-              valeur={fcfa(stats.beneficeEstimatif)}
-              icone={stats.beneficeEstimatif >= 0 ? TrendingUp : TrendingDown}
-              ton={stats.beneficeEstimatif >= 0 ? "succes" : "danger"}
-              detail="Marge brute − dépenses"
-            />
+            {!stats.restreint && (
+              <StatCard
+                titre="Bénéfice estimatif"
+                valeur={fcfa(stats.beneficeEstimatif)}
+                icone={stats.beneficeEstimatif >= 0 ? TrendingUp : TrendingDown}
+                ton={stats.beneficeEstimatif >= 0 ? "succes" : "danger"}
+                detail="Marge brute − dépenses"
+              />
+            )}
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            <StatCard titre="Marge brute" valeur={fcfa(stats.margeBrute)} icone={TrendingUp} />
-            <StatCard titre="Dépenses" valeur={fcfa(stats.depenses)} icone={CreditCard} />
-            <StatCard titre="Nombre de ventes" valeur={nombre(stats.nbVentes)} icone={ShoppingCart} />
-          </div>
+          {!stats.restreint && (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard titre="Marge brute" valeur={fcfa(stats.margeBrute)} icone={TrendingUp} />
+              <StatCard titre="Dépenses" valeur={fcfa(stats.depenses)} icone={CreditCard} />
+              <StatCard titre="Nombre de ventes" valeur={nombre(stats.nbVentes)} icone={ShoppingCart} />
+            </div>
+          )}
 
           {/* --- Évolution --- */}
           <Card className="p-5">
@@ -114,7 +134,9 @@ export default function Dashboard() {
                     <Legend wrapperStyle={{ fontSize: 12 }} />
                     <Bar dataKey="Multi-Services" fill="#1fa066" radius={[3, 3, 0, 0]} />
                     <Bar dataKey="Food" fill="#d4a017" radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="Dépenses" fill="#c05252" radius={[3, 3, 0, 0]} />
+                    {!stats.restreint && (
+                      <Bar dataKey="Dépenses" fill="#c05252" radius={[3, 3, 0, 0]} />
+                    )}
                   </BarChart>
                 </ResponsiveContainer>
               </div>

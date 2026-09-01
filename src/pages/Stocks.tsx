@@ -159,7 +159,7 @@ export default function Stocks() {
               />
             ) : (
               <Tableau
-                entetes={["Article", "Pôle", " Quantité", " Seuil", " Valeur", "État", peutAjuster ? "" : ""]}
+                entetes={["Article", "Pôle", " Quantité", " Seuil", " Valeur", "État", ""]}
               >
                 {affiches.map((p) => {
                   const rupture = p.quantite <= 0;

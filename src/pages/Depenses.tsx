@@ -6,7 +6,7 @@ import {
   Badge, Modale, Tableau, Vide, StatCard, SelecteurPeriode,
 } from "../components/ui";
 import { getDepenses, creerDepense, validerDepense } from "../services/db";
-import { fcfa, dateCourte, dateHeure, aujourdhui } from "../lib/format";
+import { fcfa, dateCourte, aujourdhui } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import {
   EXPENSE_LABELS, PAYMENT_LABELS, POLE_SHORT,

@@ -182,43 +182,106 @@ async function insertionAvecNumero<T>(
   throw new Error("Impossible de générer un numéro unique après 5 tentatives.");
 }
 
-/** Bornes [début, fin[ d'une période, en ISO. */
-function bornesPeriode(query: Record<string, unknown>): { debut: Date; fin: Date; libelle: string } {
+// --- Périodes et fuseau horaire --------------------------------------------
+
+// L'entreprise est à Brazzaville : UTC+1 toute l'année, sans heure d'été.
+// Ce décalage est appliqué explicitement au lieu de se fier au fuseau du
+// serveur, qui est en UTC sur Vercel : sinon « aujourd'hui » commencerait à
+// 23 h la veille pour la boutique, et les ventes de début de soirée
+// tomberaient dans le mauvais jour — inacceptable pour un rapprochement de
+// caisse quotidien.
+const DECALAGE_MINUTES = 60;
+
+/** Instant → date « vue de Brazzaville », lisible avec les accesseurs UTC. */
+function versLocal(instant: Date): Date {
+  return new Date(instant.getTime() + DECALAGE_MINUTES * 60_000);
+}
+
+/** Date locale (champs UTC) → instant réel correspondant. */
+function versInstant(local: Date): Date {
+  return new Date(local.getTime() - DECALAGE_MINUTES * 60_000);
+}
+
+/** Jour local au format AAAA-MM-JJ, pour les colonnes `date` de Postgres. */
+function jourLocal(instant: Date): string {
+  return versLocal(instant).toISOString().slice(0, 10);
+}
+
+interface Bornes {
+  /** Borne basse incluse, en instant réel (colonnes `timestamptz`). */
+  debut: Date;
+  /** Borne haute exclue, en instant réel. */
+  fin: Date;
+  /** Premier jour inclus, AAAA-MM-JJ (colonnes `date`). */
+  debutJour: string;
+  /** Dernier jour inclus, AAAA-MM-JJ. Distinct de `fin`, qui est exclusive. */
+  finJour: string;
+  libelle: string;
+}
+
+function bornesPeriode(query: Record<string, unknown>): Bornes {
   const periode = String(query.periode ?? "jour");
   const maintenant = new Date();
-  const debutDuJour = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const local = versLocal(maintenant);
+
+  /** Minuit local d'une date exprimée en champs UTC. */
+  const minuit = (annee: number, mois: number, jour: number) =>
+    versInstant(new Date(Date.UTC(annee, mois, jour)));
 
   if (periode === "personnalise" && query.debut && query.fin) {
-    const debut = new Date(String(query.debut));
-    const fin = new Date(String(query.fin));
-    // Borne haute inclusive côté utilisateur : on ajoute un jour pour couvrir
-    // toute la journée de fin.
-    fin.setDate(fin.getDate() + 1);
-    return { debut, fin, libelle: "Période personnalisée" };
+    const debutJour = String(query.debut);
+    const finJour = String(query.fin);
+    return {
+      debut: versInstant(new Date(`${debutJour}T00:00:00.000Z`)),
+      // L'utilisateur choisit une date de fin incluse : la borne exclusive est
+      // le lendemain à minuit, pour couvrir toute la journée.
+      fin: versInstant(new Date(Date.parse(`${finJour}T00:00:00.000Z`) + 86_400_000)),
+      debutJour,
+      finJour,
+      libelle: "Période personnalisée",
+    };
   }
+
+  const annee = local.getUTCFullYear();
+  const mois = local.getUTCMonth();
+  const jour = local.getUTCDate();
+  const finJour = jourLocal(maintenant);
 
   switch (periode) {
     case "semaine": {
-      const debut = debutDuJour(maintenant);
-      // Semaine commençant le lundi (getDay() : 0 = dimanche).
-      const decalage = (debut.getDay() + 6) % 7;
-      debut.setDate(debut.getDate() - decalage);
-      return { debut, fin: maintenant, libelle: "Cette semaine" };
-    }
-    case "mois":
+      // Semaine commençant le lundi (getUTCDay() : 0 = dimanche).
+      const decalage = (local.getUTCDay() + 6) % 7;
+      const debut = minuit(annee, mois, jour - decalage);
       return {
-        debut: new Date(maintenant.getFullYear(), maintenant.getMonth(), 1),
-        fin: maintenant,
+        debut, fin: maintenant,
+        debutJour: jourLocal(debut), finJour,
+        libelle: "Cette semaine",
+      };
+    }
+    case "mois": {
+      const debut = minuit(annee, mois, 1);
+      return {
+        debut, fin: maintenant,
+        debutJour: jourLocal(debut), finJour,
         libelle: "Ce mois-ci",
       };
-    case "annee":
+    }
+    case "annee": {
+      const debut = minuit(annee, 0, 1);
       return {
-        debut: new Date(maintenant.getFullYear(), 0, 1),
-        fin: maintenant,
+        debut, fin: maintenant,
+        debutJour: jourLocal(debut), finJour,
         libelle: "Cette année",
       };
-    default:
-      return { debut: debutDuJour(maintenant), fin: maintenant, libelle: "Aujourd'hui" };
+    }
+    default: {
+      const debut = minuit(annee, mois, jour);
+      return {
+        debut, fin: maintenant,
+        debutJour: finJour, finJour,
+        libelle: "Aujourd'hui",
+      };
+    }
   }
 }
 
@@ -1124,12 +1187,12 @@ export function createApiApp() {
   // -------------------------------------------------------------------------
 
   api.get("/purchases", requireRole(...VALIDENT), route(async (req, res) => {
-    const { debut, fin } = bornesPeriode(req.query as Record<string, unknown>);
+    const { debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
 
     const { data, error } = await supabase
       .from("purchases").select("*, suppliers(nom)")
-      .gte("date_achat", debut.toISOString().slice(0, 10))
-      .lte("date_achat", fin.toISOString().slice(0, 10))
+      .gte("date_achat", debutJour)
+      .lte("date_achat", finJour)
       .order("date_achat", { ascending: false });
     if (error) throw new Error(error.message);
 
@@ -1175,7 +1238,7 @@ export function createApiApp() {
         numero,
         supplier_id: supplierId ?? null,
         pole,
-        date_achat: dateAchat ?? new Date().toISOString().slice(0, 10),
+        date_achat: dateAchat ?? jourLocal(new Date()),
         montant_total: montantTotal,
         montant_paye: paye,
         payment_method: paymentMethod ?? "especes",
@@ -1257,12 +1320,12 @@ export function createApiApp() {
   // -------------------------------------------------------------------------
 
   api.get("/expenses", route(async (req, res) => {
-    const { debut, fin } = bornesPeriode(req.query as Record<string, unknown>);
+    const { debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
 
     let q = supabase
       .from("expenses").select("*")
-      .gte("date_depense", debut.toISOString().slice(0, 10))
-      .lte("date_depense", fin.toISOString().slice(0, 10))
+      .gte("date_depense", debutJour)
+      .lte("date_depense", finJour)
       .order("date_depense", { ascending: false });
     if (estPoleValide(req.query.pole)) q = q.eq("pole", req.query.pole);
 
@@ -1305,7 +1368,7 @@ export function createApiApp() {
         categorie,
         montant: Number(montant),
         motif,
-        date_depense: dateDepense ?? new Date().toISOString().slice(0, 10),
+        date_depense: dateDepense ?? jourLocal(new Date()),
         payment_method: methode,
         effectue_par: req.profil!.id,
         justificatif: justificatif ?? null,
@@ -1431,15 +1494,29 @@ export function createApiApp() {
   // -------------------------------------------------------------------------
 
   api.get("/dashboard", route(async (req, res) => {
-    const { debut, fin } = bornesPeriode(req.query as Record<string, unknown>);
+    const { debut, fin, debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
+
+    // §5.1 : caissier et technicien n'ont qu'une consultation limitée. Leur
+    // afficher le chiffre d'affaires consolidé, les marges et le bénéfice de
+    // l'entreprise reviendrait à leur ouvrir la comptabilité par la fenêtre du
+    // tableau de bord. Ils voient donc leur propre activité, l'état de la
+    // caisse et les alertes de stock — ce dont ils ont besoin pour travailler.
+    const restreint = req.profil!.role === "caissier" || req.profil!.role === "technicien";
+
+    let requeteVentes = supabase
+      .from("sales").select("pole, total, cout_total, created_at, statut, vendeur_id")
+      .gte("created_at", debut.toISOString()).lt("created_at", fin.toISOString())
+      .eq("statut", "validee");
+    if (restreint) requeteVentes = requeteVentes.eq("vendeur_id", req.profil!.id);
 
     const [{ data: ventes }, { data: depenses }, { data: sessions }, alertes] = await Promise.all([
-      supabase.from("sales").select("pole, total, cout_total, created_at, statut")
-        .gte("created_at", debut.toISOString()).lt("created_at", fin.toISOString())
-        .eq("statut", "validee"),
-      supabase.from("expenses").select("pole, montant, date_depense, valide_par")
-        .gte("date_depense", debut.toISOString().slice(0, 10))
-        .lte("date_depense", fin.toISOString().slice(0, 10)),
+      requeteVentes,
+      // Les dépenses ne concernent pas les profils restreints : requête évitée.
+      restreint
+        ? Promise.resolve({ data: [] as { pole: string; montant: number; date_depense: string }[] })
+        : supabase.from("expenses").select("pole, montant, date_depense, valide_par")
+            .gte("date_depense", debutJour)
+            .lte("date_depense", finJour),
       supabase.from("cash_sessions").select("*").eq("statut", "ouverte"),
       supabase.from("products").select("id, nom, quantite, seuil_alerte")
         .eq("actif", true).eq("gere_stock", true),
@@ -1461,7 +1538,7 @@ export function createApiApp() {
       return parJour.get(cle)!;
     };
     for (const v of lignesVentes) {
-      const cle = String(v.created_at).slice(0, 10);
+      const cle = jourLocal(new Date(v.created_at));
       const jour = initJour(cle);
       if (v.pole === "MULTI_SERVICES") jour.caMultiServices += Number(v.total);
       else jour.caFood += Number(v.total);
@@ -1471,8 +1548,13 @@ export function createApiApp() {
     }
 
     const noms = await nomsEmployes();
+    // Un profil restreint rattaché à un pôle ne voit que la caisse de ce pôle ;
+    // celui qui intervient sur les deux (pole null) les voit toutes.
+    const sessionsVisibles = (sessions ?? []).filter(
+      (s) => !restreint || !req.profil!.pole || s.pole === req.profil!.pole
+    );
     const caisses = await Promise.all(
-      (sessions ?? []).map(async (s) => ({
+      sessionsVisibles.map(async (s) => ({
         pole: s.pole as Pole,
         sessionId: s.id,
         ouvertePar: noms.get(s.opened_by) ?? "—",
@@ -1487,13 +1569,17 @@ export function createApiApp() {
     }));
 
     const stats: DashboardStats = {
+      restreint,
       caMultiServices,
       caFood,
       caTotal: caMultiServices + caFood,
       nbVentes: lignesVentes.length,
-      depenses: totalDepenses,
-      margeBrute,
-      beneficeEstimatif: margeBrute - totalDepenses,
+      // Marge, dépenses et bénéfice ne sont pas seulement masqués à l'écran :
+      // ils ne quittent pas le serveur pour un profil restreint. Une valeur
+      // envoyée puis cachée reste lisible dans la réponse réseau.
+      depenses: restreint ? 0 : totalDepenses,
+      margeBrute: restreint ? 0 : margeBrute,
+      beneficeEstimatif: restreint ? 0 : margeBrute - totalDepenses,
       caisses,
       ruptures: produits.filter((p) => p.quantite <= 0),
       bientotEnRupture: produits.filter((p) => p.quantite > 0 && p.quantite <= p.seuilAlerte),
@@ -1509,7 +1595,9 @@ export function createApiApp() {
   // -------------------------------------------------------------------------
 
   api.get("/reports", requireRole(...VALIDENT), route(async (req, res) => {
-    const { debut, fin, libelle } = bornesPeriode(req.query as Record<string, unknown>);
+    const { debut, fin, debutJour, finJour, libelle } = bornesPeriode(
+      req.query as Record<string, unknown>
+    );
     const debutISO = debut.toISOString();
     const finISO = fin.toISOString();
 
@@ -1519,9 +1607,9 @@ export function createApiApp() {
           .select("id, pole, total, cout_total, vendeur_id, payment_method, statut")
           .gte("created_at", debutISO).lt("created_at", finISO).eq("statut", "validee"),
         supabase.from("expenses").select("categorie, montant")
-          .gte("date_depense", debutISO.slice(0, 10)).lte("date_depense", finISO.slice(0, 10)),
+          .gte("date_depense", debutJour).lte("date_depense", finJour),
         supabase.from("purchases").select("montant_total, montant_paye, montant_restant")
-          .gte("date_achat", debutISO.slice(0, 10)).lte("date_achat", finISO.slice(0, 10)),
+          .gte("date_achat", debutJour).lte("date_achat", finJour),
         supabase.from("cash_sessions").select("*").eq("statut", "fermee")
           .gte("closed_at", debutISO).lt("closed_at", finISO),
       ]);

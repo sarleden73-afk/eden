@@ -1049,12 +1049,12 @@ export function createApiApp() {
       return res.status(400).json({ error: "La vente doit contenir au moins une ligne." });
     }
 
+    // La caisse n'est plus un préalable à la vente : bloquer un encaissement
+    // parce qu'une session n'est pas ouverte fait perdre des ventes réelles au
+    // comptoir. Quand une caisse est ouverte, la vente s'y rattache et alimente
+    // le rapprochement ; sinon elle est enregistrée sans session, et n'entre
+    // simplement pas dans l'écart de fermeture.
     const session = await sessionOuverte(cible.id);
-    if (!session) {
-      return res.status(409).json({
-        error: "Aucune caisse ouverte pour cet établissement. Ouvrez la caisse avant d'enregistrer une vente.",
-      });
-    }
 
     const idsProduits = items.filter((i) => i.productId).map((i) => Number(i.productId));
     const idsPacks = items.filter((i) => i.packId).map((i) => Number(i.packId));
@@ -1148,7 +1148,7 @@ export function createApiApp() {
       (numero) => ({
         numero_recu: numero,
         establishment_id: cible.id,
-        session_id: session.id,
+        session_id: session?.id ?? null,
         customer_id: customerId ?? null,
         vendeur_id: req.profil!.id,
         payment_method: paymentMethod ?? "especes",
@@ -1182,15 +1182,17 @@ export function createApiApp() {
       if (error) console.error("[stock] décrément échoué:", error.message, ligne);
     }
 
-    await supabase.from("cash_movements").insert({
-      session_id: session.id,
-      type: "vente",
-      montant: sousTotal - remiseNum,
-      motif: `Vente ${vente.numero_recu}`,
-      payment_method: paymentMethod ?? "especes",
-      sale_id: vente.id,
-      created_by: req.profil!.id,
-    });
+    if (session) {
+      await supabase.from("cash_movements").insert({
+        session_id: session.id,
+        type: "vente",
+        montant: sousTotal - remiseNum,
+        motif: `Vente ${vente.numero_recu}`,
+        payment_method: paymentMethod ?? "especes",
+        sale_id: vente.id,
+        created_by: req.profil!.id,
+      });
+    }
 
     res.status(201).json({
       id: vente.id, numeroRecu: vente.numero_recu, total: sousTotal - remiseNum,
@@ -1770,6 +1772,7 @@ export function createApiApp() {
         establishmentId: e.id, nom: e.nom, couleur: e.couleur,
         ca, cout, marge: ca - cout, nbVentes: v.length,
         depenses: restreint ? 0 : dep,
+        tresorerie: restreint ? 0 : ca - dep,
         resultat: restreint ? 0 : ca - cout - dep,
       };
     });
@@ -1822,6 +1825,7 @@ export function createApiApp() {
       depenses: restreint ? 0 : totalDepenses,
       margeBrute: restreint ? 0 : margeBrute,
       beneficeEstimatif: restreint ? 0 : margeBrute - totalDepenses,
+      tresorerie: restreint ? 0 : ca - totalDepenses,
       parEtablissement,
       caisses,
       ruptures: produits.filter((p) => p.quantite <= 0),
@@ -1902,6 +1906,7 @@ export function createApiApp() {
       return {
         establishmentId: e.id, nom: e.nom, couleur: e.couleur,
         ca, cout, marge: ca - cout, nbVentes: v.length, depenses: dep,
+        tresorerie: ca - dep,
         resultat: ca - cout - dep,
       };
     });

@@ -8,7 +8,7 @@ import {
 import {
   getUtilisateurs, creerUtilisateur, modifierUtilisateur, reinitialiserMotDePasse,
 } from "../services/db";
-import { fcfa, dateCourte } from "../lib/format";
+import { dateCourte } from "../lib/format";
 import { exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { ROLE_LABELS, type Profile, type UserRole, type Establishment } from "../types";
@@ -78,11 +78,10 @@ export default function Personnel() {
   const exporter = () =>
     exporterCSV(
       "personnel-eden",
-      ["Nom complet", "E-mail", "Rôle", "Établissement", "Poste", "Téléphone", "Salaire", "Date d'entrée", "État"],
+      ["Nom complet", "E-mail", "Rôle", "Établissement", "Date d'entrée", "État"],
       utilisateurs.map((u) => [
         u.fullName, u.email, ROLE_LABELS[u.role],
         u.etablissementNom ?? "Tous les établissements",
-        u.poste ?? "", u.telephone ?? "", u.salaire ?? "",
         dateCourte(u.dateEntree), u.actif ? "Actif" : "Désactivé",
       ])
     );
@@ -104,7 +103,7 @@ export default function Personnel() {
         ) : utilisateurs.length === 0 ? (
           <Vide icone={UserCog} titre="Aucun compte" />
         ) : (
-          <Tableau entetes={["Employé", "Rôle", "Établissement", "Poste", " Salaire", "Entrée", "État", ""]}>
+          <Tableau entetes={["Employé", "Rôle", "Établissement", "Entrée", "État", ""]}>
             {utilisateurs.map((u) => (
               <tr key={u.id} className={cn("hover:bg-gray-50", !u.actif && "opacity-50")}>
                 <td className="px-4 py-3">
@@ -117,10 +116,6 @@ export default function Personnel() {
                 <td className="px-4 py-3"><Badge ton={TONS_ROLE[u.role]}>{ROLE_LABELS[u.role]}</Badge></td>
                 <td className="px-4 py-3 text-gray-600 text-sm">
                   {u.etablissementNom ?? <span className="text-gray-400">Tous</span>}
-                </td>
-                <td className="px-4 py-3 text-gray-600">{u.poste ?? "—"}</td>
-                <td className="px-4 py-3 text-right tabulaire text-gray-600 whitespace-nowrap">
-                  {u.salaire ? fcfa(u.salaire) : <span className="text-gray-400">—</span>}
                 </td>
                 <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(u.dateEntree)}</td>
                 <td className="px-4 py-3">
@@ -199,7 +194,7 @@ function ModaleUtilisateur({
 
   const [form, setForm] = useState({
     fullName: "", email: "", password: "", role: "caissier" as UserRole,
-    establishmentId: "", poste: "", telephone: "", salaire: "", dateEntree: "", actif: true,
+    establishmentId: "", dateEntree: "", actif: true,
   });
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
@@ -213,9 +208,6 @@ function ModaleUtilisateur({
       password: "",
       role: utilisateur?.role ?? "caissier",
       establishmentId: utilisateur?.establishmentId ? String(utilisateur.establishmentId) : "",
-      poste: utilisateur?.poste ?? "",
-      telephone: utilisateur?.telephone ?? "",
-      salaire: utilisateur?.salaire ? String(utilisateur.salaire) : "",
       dateEntree: utilisateur?.dateEntree?.slice(0, 10) ?? "",
       actif: utilisateur?.actif ?? true,
     });
@@ -231,9 +223,6 @@ function ModaleUtilisateur({
         fullName: form.fullName.trim(),
         role: form.role,
         establishmentId: form.establishmentId ? Number(form.establishmentId) : null,
-        poste: form.poste.trim() || undefined,
-        telephone: form.telephone.trim() || undefined,
-        salaire: form.salaire ? Number(form.salaire) : undefined,
         dateEntree: form.dateEntree || undefined,
       };
       if (utilisateur) {
@@ -319,25 +308,10 @@ function ModaleUtilisateur({
           </Liste>
         </Champ>
 
-        <Champ label="Poste">
-          <Saisie
-            value={form.poste} onChange={(e) => setForm({ ...form, poste: e.target.value })}
-            placeholder="Ex. : Agent polyvalent caisse / vente"
-          />
-        </Champ>
-
-        <Champ label="Téléphone">
-          <Saisie value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} />
-        </Champ>
-
-        <Champ label="Salaire mensuel (FCFA)">
-          <Saisie
-            type="number" min={0} value={form.salaire}
-            onChange={(e) => setForm({ ...form, salaire: e.target.value })}
-          />
-        </Champ>
-
-        <Champ label="Date d'entrée">
+        {/* Poste, téléphone et salaire ont été retirés : le rôle dit déjà ce que
+            fait la personne, et le salaire relève de la paie, pas d'un écran
+            que plusieurs personnes peuvent consulter. */}
+        <Champ label="Date d'entrée" aide="Facultatif.">
           <Saisie
             type="date" value={form.dateEntree}
             onChange={(e) => setForm({ ...form, dateEntree: e.target.value })}

@@ -380,6 +380,8 @@ export interface LigneEtablissement {
   marge: number;
   nbVentes: number;
   depenses: number;
+  /** Chiffre d.affaires moins dépenses : ce qui reste effectivement. */
+  tresorerie: number;
   resultat: number;
 }
 
@@ -399,6 +401,8 @@ export interface DashboardStats {
   depenses: number;
   margeBrute: number;
   beneficeEstimatif: number;
+  /** Chiffre d.affaires moins dépenses : ce qui reste en caisse. */
+  tresorerie: number;
   /**
    * Détail par établissement. Une seule ligne quand un établissement est
    * sélectionné ; toutes en vue consolidée — jamais fondues ensemble.

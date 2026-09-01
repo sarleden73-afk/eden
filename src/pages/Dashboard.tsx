@@ -4,8 +4,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from "recharts";
 import {
-  Wallet, ShoppingCart, TrendingUp, TrendingDown, CreditCard, AlertTriangle,
-  PackageX, Scale, Building2,
+  Wallet, ShoppingCart, TrendingUp, TrendingDown, AlertTriangle,
+  PackageX, Building2,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import {
@@ -80,7 +80,11 @@ export default function Dashboard() {
         <Chargement />
       ) : stats ? (
         <div className="space-y-6">
-          {/* --- Synthèse de la sélection --- */}
+          {/* --- Synthèse : entrées, sorties, ce qui reste --- */}
+          {/* La marge brute a été retirée : tant que les prix d'achat ne sont
+              pas renseignés, elle vaut mécaniquement le chiffre d'affaires et
+              n'apprend rien. Ce qui compte au quotidien, c'est ce qui entre,
+              ce qui sort, et ce qui reste. */}
           <div className={cn(
             "grid gap-4 sm:grid-cols-2",
             stats.restreint ? "lg:grid-cols-3" : "lg:grid-cols-4"
@@ -96,19 +100,23 @@ export default function Dashboard() {
               valeur={nombre(stats.nbVentes)}
               icone={ShoppingCart}
             />
-            {!stats.restreint && (
+            {!stats.restreint ? (
               <>
-                <StatCard titre="Marge brute" valeur={fcfa(stats.margeBrute)} icone={Scale} />
                 <StatCard
-                  titre="Bénéfice estimatif"
-                  valeur={fcfa(stats.beneficeEstimatif)}
-                  icone={stats.beneficeEstimatif >= 0 ? TrendingUp : TrendingDown}
-                  ton={stats.beneficeEstimatif >= 0 ? "succes" : "danger"}
-                  detail={`Dépenses : ${fcfa(stats.depenses)}`}
+                  titre="Dépenses"
+                  valeur={fcfa(stats.depenses)}
+                  icone={TrendingDown}
+                  detail="Salaires, loyer, achats, imprévus…"
+                />
+                <StatCard
+                  titre="Trésorerie nette"
+                  valeur={fcfa(stats.tresorerie)}
+                  icone={stats.tresorerie >= 0 ? Wallet : TrendingDown}
+                  ton={stats.tresorerie >= 0 ? "succes" : "danger"}
+                  detail="Chiffre d'affaires − dépenses"
                 />
               </>
-            )}
-            {stats.restreint && (
+            ) : (
               <StatCard titre="Établissement" valeur={libelle} icone={Building2} />
             )}
           </div>
@@ -123,7 +131,7 @@ export default function Dashboard() {
                 </p>
               </div>
               <Tableau
-                entetes={["Établissement", " Ventes", " CA", " Marge", " Dépenses", " Résultat"]}
+                entetes={["Établissement", " Ventes", " CA", " Dépenses", " Trésorerie nette"]}
               >
                 {etabs.map((e) => (
                   <tr key={e.establishmentId} className="hover:bg-gray-50">
@@ -139,13 +147,12 @@ export default function Dashboard() {
                     </td>
                     <td className="px-4 py-3 text-right tabulaire">{nombre(e.nbVentes)}</td>
                     <td className="px-4 py-3 text-right tabulaire font-medium">{fcfa(e.ca)}</td>
-                    <td className="px-4 py-3 text-right tabulaire text-gray-600">{fcfa(e.marge)}</td>
                     <td className="px-4 py-3 text-right tabulaire text-red-700">{fcfa(e.depenses)}</td>
                     <td className={cn(
                       "px-4 py-3 text-right tabulaire font-semibold",
-                      e.resultat >= 0 ? "text-green-700" : "text-red-700"
+                      e.tresorerie >= 0 ? "text-green-700" : "text-red-700"
                     )}>
-                      {fcfa(e.resultat)}
+                      {fcfa(e.tresorerie)}
                     </td>
                   </tr>
                 ))}
@@ -153,13 +160,12 @@ export default function Dashboard() {
                   <td className="px-4 py-3">Total groupe</td>
                   <td className="px-4 py-3 text-right tabulaire">{nombre(stats.nbVentes)}</td>
                   <td className="px-4 py-3 text-right tabulaire">{fcfa(stats.ca)}</td>
-                  <td className="px-4 py-3 text-right tabulaire">{fcfa(stats.margeBrute)}</td>
                   <td className="px-4 py-3 text-right tabulaire text-red-700">{fcfa(stats.depenses)}</td>
                   <td className={cn(
                     "px-4 py-3 text-right tabulaire",
-                    stats.beneficeEstimatif >= 0 ? "text-green-700" : "text-red-700"
+                    stats.tresorerie >= 0 ? "text-green-700" : "text-red-700"
                   )}>
-                    {fcfa(stats.beneficeEstimatif)}
+                    {fcfa(stats.tresorerie)}
                   </td>
                 </tr>
               </Tableau>

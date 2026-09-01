@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
-import { UserCog, Plus, Pencil, KeyRound, ShieldCheck, FileDown, Copy, Check } from "lucide-react";
+import {
+  UserCog, Plus, Pencil, KeyRound, ShieldCheck, FileDown, Copy, Check, Mail, Hash,
+} from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Erreur, Chargement,
   Badge, Modale, Tableau, Vide,
 } from "../components/ui";
 import {
-  getUtilisateurs, creerUtilisateur, modifierUtilisateur, reinitialiserMotDePasse,
+  getUtilisateurs, creerUtilisateur, modifierUtilisateur,
+  reinitialiserMotDePasse, definirCodePin, getEtablissements,
 } from "../services/db";
 import { dateCourte } from "../lib/format";
 import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
-import { ROLE_LABELS, type Profile, type UserRole, type Establishment } from "../types";
-import { getEtablissements } from "../services/db";
 import { useAuth } from "../contexts/AuthContext";
+import { ROLE_LABELS, type Profile, type UserRole, type Establishment } from "../types";
 
 const TONS_ROLE: Record<UserRole, "info" | "succes" | "neutre" | "alerte"> = {
   admin: "info",
@@ -22,19 +24,26 @@ const TONS_ROLE: Record<UserRole, "info" | "succes" | "neutre" | "alerte"> = {
   technicien: "alerte",
 };
 
+/**
+ * Rôles à connexion par code : le personnel de terrain, qui n'a pas à taper
+ * une adresse e-mail plusieurs fois par jour sur une tablette.
+ */
+const ROLES_TERRAIN: UserRole[] = ["caissier", "technicien"];
+const estTerrain = (r: UserRole) => ROLES_TERRAIN.includes(r);
+
 /** Résumé des autorisations du §5.1, affiché pour cadrer la création de compte. */
 const DROITS: Record<UserRole, string[]> = {
   admin: [
     "Accès à tout",
-    "Gestion des utilisateurs",
+    "Gestion des comptes et des établissements",
     "Modification des prix",
-    "Consultation de la comptabilité et des rapports",
+    "Comptabilité et rapports",
   ],
   responsable: [
     "Consultation des ventes et du stock",
     "Validation des dépenses et des annulations",
     "Fermeture de caisse et inventaires",
-    "Suivi des employés et rapports",
+    "Rapports et journal",
   ],
   caissier: [
     "Enregistrement des ventes et encaissement",
@@ -50,21 +59,25 @@ const DROITS: Record<UserRole, string[]> = {
   ],
 };
 
-/** §5.1 Gestion des utilisateurs — réservé à l'administrateur. */
+/** §5.1 Gestion des comptes — réservé au propriétaire. */
 export default function Personnel() {
   const { profil } = useAuth();
   const [utilisateurs, setUtilisateurs] = useState<Profile[]>([]);
+  const [etablissements, setEtablissements] = useState<Establishment[]>([]);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [edite, setEdite] = useState<Profile | "nouveau" | null>(null);
-  const [etablissements, setEtablissements] = useState<Establishment[]>([]);
-  const [motDePasseA, setMotDePasseA] = useState<Profile | null>(null);
+  const [secretA, setSecretA] = useState<Profile | null>(null);
 
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setUtilisateurs(await getUtilisateurs());
-      setEtablissements(await getEtablissements().catch(() => []));
+      const [u, e] = await Promise.all([
+        getUtilisateurs(),
+        getEtablissements().catch(() => [] as Establishment[]),
+      ]);
+      setUtilisateurs(u);
+      setEtablissements(e);
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
@@ -78,10 +91,11 @@ export default function Personnel() {
   const exporter = () =>
     exporterListePDF(
       "personnel-eden",
-      ["Nom complet", "E-mail", "Rôle", "Établissement", "Date d'entrée", "État"],
+      ["Nom complet", "Fonction", "Rôle", "Établissement", "Connexion", "Entrée", "État"],
       utilisateurs.map((u) => [
-        u.fullName, u.email, ROLE_LABELS[u.role],
+        u.fullName, u.fonction ?? "", ROLE_LABELS[u.role],
         u.etablissementNom ?? "Tous les établissements",
+        u.modeConnexion === "pin" ? "Code à 6 chiffres" : "E-mail et mot de passe",
         dateCourte(u.dateEntree), u.actif ? "Actif" : "Désactivé",
       ])
     );
@@ -103,7 +117,7 @@ export default function Personnel() {
         ) : utilisateurs.length === 0 ? (
           <Vide icone={UserCog} titre="Aucun compte" />
         ) : (
-          <Tableau entetes={["Employé", "Rôle", "Établissement", "Entrée", "État", ""]}>
+          <Tableau entetes={["Employé", "Rôle", "Établissement", "Connexion", "Entrée", "État", ""]}>
             {utilisateurs.map((u) => (
               <tr key={u.id} className={cn("hover:bg-gray-50", !u.actif && "opacity-50")}>
                 <td className="px-4 py-3">
@@ -111,11 +125,20 @@ export default function Personnel() {
                     {u.fullName}
                     {u.id === profil?.id && <span className="ml-2 text-xs text-gray-500">(vous)</span>}
                   </div>
-                  <div className="text-xs text-gray-500">{u.email}</div>
+                  <div className="text-xs text-gray-500">
+                    {u.fonction ?? (u.modeConnexion === "email" ? u.email : "—")}
+                  </div>
                 </td>
                 <td className="px-4 py-3"><Badge ton={TONS_ROLE[u.role]}>{ROLE_LABELS[u.role]}</Badge></td>
                 <td className="px-4 py-3 text-gray-600 text-sm">
                   {u.etablissementNom ?? <span className="text-gray-400">Tous</span>}
+                </td>
+                <td className="px-4 py-3">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-gray-600">
+                    {u.modeConnexion === "pin"
+                      ? <><Hash className="h-3.5 w-3.5 text-gray-400" />Code</>
+                      : <><Mail className="h-3.5 w-3.5 text-gray-400" />E-mail</>}
+                  </span>
                 </td>
                 <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(u.dateEntree)}</td>
                 <td className="px-4 py-3">
@@ -124,9 +147,9 @@ export default function Personnel() {
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
                     <button
-                      onClick={() => setMotDePasseA(u)}
+                      onClick={() => setSecretA(u)}
                       className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                      title="Réinitialiser le mot de passe"
+                      title={u.modeConnexion === "pin" ? "Nouveau code" : "Nouveau mot de passe"}
                     >
                       <KeyRound className="h-4 w-4" />
                     </button>
@@ -165,16 +188,20 @@ export default function Personnel() {
           ))}
         </div>
         <p className="mt-4 text-xs text-gray-500">
-          Ces règles sont appliquées côté serveur : masquer un écran ne suffirait pas, chaque
-          appel à l'API vérifie le rôle de l'utilisateur qui le déclenche.
+          Le rôle fixe le niveau d'accès ; la fonction, elle, est l'intitulé du poste tel que vous
+          le nommez (cuisinière, vendeur, infographe…). Ces règles sont appliquées côté serveur :
+          masquer un écran ne suffirait pas, chaque appel à l'API vérifie le rôle de qui le
+          déclenche.
         </p>
       </Card>
 
       <ModaleUtilisateur
-        cible={edite} etablissements={etablissements} onFermer={() => setEdite(null)}
+        cible={edite}
+        etablissements={etablissements}
+        onFermer={() => setEdite(null)}
         onSucces={() => { setEdite(null); void recharger(); }}
       />
-      <ModaleMotDePasse utilisateur={motDePasseA} onFermer={() => setMotDePasseA(null)} />
+      <ModaleSecret utilisateur={secretA} onFermer={() => setSecretA(null)} />
     </Layout>
   );
 }
@@ -191,10 +218,12 @@ function ModaleUtilisateur({
 }) {
   const nouveau = cible === "nouveau";
   const utilisateur = nouveau ? null : cible;
+  const actifs = etablissements.filter((e) => e.actif);
 
   const [form, setForm] = useState({
-    fullName: "", email: "", password: "", role: "caissier" as UserRole,
+    fullName: "", fonction: "", role: "caissier" as UserRole,
     establishmentId: "", dateEntree: "", actif: true,
+    email: "", password: "", pin: "",
   });
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
@@ -204,16 +233,38 @@ function ModaleUtilisateur({
     setErreur(null);
     setForm({
       fullName: utilisateur?.fullName ?? "",
-      email: utilisateur?.email ?? "",
-      password: "",
+      fonction: utilisateur?.fonction ?? "",
       role: utilisateur?.role ?? "caissier",
-      establishmentId: utilisateur?.establishmentId ? String(utilisateur.establishmentId) : "",
+      // Un rôle de terrain exige un établissement : on en propose un d'emblée
+      // plutôt que de laisser un champ vide qui affiche pourtant un nom.
+      establishmentId: utilisateur?.establishmentId
+        ? String(utilisateur.establishmentId)
+        : String(actifs[0]?.id ?? ""),
       dateEntree: utilisateur?.dateEntree?.slice(0, 10) ?? "",
       actif: utilisateur?.actif ?? true,
+      email: "", password: "", pin: "",
     });
-  }, [cible, utilisateur]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cible]);
 
   if (!cible) return null;
+
+  const terrain = estTerrain(form.role);
+
+  /**
+   * Changer de rôle change les champs attendus. On aligne le rattachement en
+   * même temps : passer à un rôle de terrain sans établissement produirait un
+   * refus du serveur incompréhensible pour l'utilisateur.
+   */
+  const changerRole = (role: UserRole) => {
+    setForm((f) => ({
+      ...f,
+      role,
+      establishmentId: estTerrain(role)
+        ? (f.establishmentId || String(actifs[0]?.id ?? ""))
+        : f.establishmentId,
+    }));
+  };
 
   const soumettre = async () => {
     setEnvoi(true);
@@ -223,10 +274,13 @@ function ModaleUtilisateur({
         fullName: form.fullName.trim(),
         role: form.role,
         establishmentId: form.establishmentId ? Number(form.establishmentId) : null,
+        fonction: form.fonction.trim() || undefined,
         dateEntree: form.dateEntree || undefined,
       };
       if (utilisateur) {
         await modifierUtilisateur(utilisateur.id, { ...commun, actif: form.actif });
+      } else if (terrain) {
+        await creerUtilisateur({ ...commun, pin: form.pin });
       } else {
         await creerUtilisateur({ ...commun, email: form.email.trim(), password: form.password });
       }
@@ -240,7 +294,11 @@ function ModaleUtilisateur({
 
   const valide =
     form.fullName.trim() &&
-    (utilisateur || (form.email.trim() && form.password.length >= 8));
+    (!terrain || form.establishmentId) &&
+    (utilisateur ||
+      (terrain
+        ? /^\d{6}$/.test(form.pin)
+        : form.email.trim() && form.password.length >= 8));
 
   return (
     <Modale
@@ -257,39 +315,34 @@ function ModaleUtilisateur({
             <Saisie
               value={form.fullName}
               onChange={(e) => setForm({ ...form, fullName: e.target.value })}
+              placeholder="Ex. : GBETOU Prince Noël"
               autoFocus
             />
           </Champ>
         </div>
 
-        <Champ label="Identifiant (e-mail)" aide={utilisateur ? "Non modifiable après création." : undefined}>
-          <Saisie
-            type="email" value={form.email} disabled={!!utilisateur}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-            placeholder="prenom.nom@eden.cg"
-          />
-        </Champ>
-
-        {nouveau && (
-          <Champ label="Mot de passe initial" aide="8 caractères minimum. À communiquer à l'employé.">
-            <Saisie
-              type="text" value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-            />
-          </Champ>
-        )}
-
-        <Champ label="Rôle">
-          <Liste value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as UserRole })}>
+        <Champ label="Rôle" aide="Détermine ce à quoi la personne a accès.">
+          <Liste value={form.role} onChange={(e) => changerRole(e.target.value as UserRole)}>
             {Object.entries(ROLE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </Liste>
         </Champ>
 
         <Champ
-          label="Établissement de rattachement"
+          label="Fonction"
+          aide="Intitulé du poste, libre. Ex. : Cuisinière, Infographe, Vendeur."
+        >
+          <Saisie
+            value={form.fonction}
+            onChange={(e) => setForm({ ...form, fonction: e.target.value })}
+            placeholder="Facultatif"
+          />
+        </Champ>
+
+        <Champ
+          label="Établissement"
           aide={
-            form.role === "caissier" || form.role === "technicien"
-              ? "Obligatoire : ce rôle ne peut pas accéder à plusieurs établissements."
+            terrain
+              ? "Obligatoire : ce rôle n'accède qu'à un seul établissement."
               : "« Tous » donne accès à chaque établissement et à la vue consolidée."
           }
         >
@@ -297,26 +350,61 @@ function ModaleUtilisateur({
             value={form.establishmentId}
             onChange={(e) => setForm({ ...form, establishmentId: e.target.value })}
           >
-            {/* Le rattachement « tous » n'est proposé qu'aux rôles qui peuvent
-                réellement basculer d'un établissement à l'autre (§5.1). */}
-            {(form.role === "admin" || form.role === "responsable") && (
-              <option value="">Tous les établissements</option>
-            )}
-            {etablissements.filter((e) => e.actif).map((e) => (
-              <option key={e.id} value={e.id}>{e.nom}</option>
-            ))}
+            {!terrain && <option value="">Tous les établissements</option>}
+            {actifs.map((e) => <option key={e.id} value={e.id}>{e.nom}</option>)}
           </Liste>
         </Champ>
 
-        {/* Poste, téléphone et salaire ont été retirés : le rôle dit déjà ce que
-            fait la personne, et le salaire relève de la paie, pas d'un écran
-            que plusieurs personnes peuvent consulter. */}
-        <Champ label="Date d'entrée" aide="Facultatif.">
+        <Champ label="Date d'entrée" aide="Date de début dans l'entreprise. Facultatif.">
           <Saisie
             type="date" value={form.dateEntree}
             onChange={(e) => setForm({ ...form, dateEntree: e.target.value })}
           />
         </Champ>
+
+        {/* --- Identifiants, selon le rôle --- */}
+        {nouveau && (
+          terrain ? (
+            <div className="sm:col-span-2">
+              <Champ
+                label="Code d'accès (6 chiffres)"
+                aide="C'est tout ce que la personne aura à saisir : elle touchera son nom dans la liste, puis composera ce code."
+              >
+                <Saisie
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={form.pin}
+                  onChange={(e) =>
+                    setForm({ ...form, pin: e.target.value.replace(/\D/g, "").slice(0, 6) })
+                  }
+                  placeholder="Ex. : 240719"
+                  className="tabulaire tracking-[0.4em] text-center text-lg"
+                />
+              </Champ>
+              <p className="mt-2 text-xs text-gray-500">
+                Aucune adresse e-mail n'est demandée : l'application en génère une, technique et
+                invisible, pour que la session reste nominative et que le journal sache toujours
+                qui a encaissé.
+              </p>
+            </div>
+          ) : (
+            <>
+              <Champ label="Adresse e-mail" aide="Sert d'identifiant de connexion.">
+                <Saisie
+                  type="email" value={form.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                  placeholder="prenom.nom@exemple.com"
+                />
+              </Champ>
+              <Champ label="Mot de passe" aide="8 caractères minimum.">
+                <Saisie
+                  type="text" value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                />
+              </Champ>
+            </>
+          )
+        )}
       </div>
 
       <div className="p-3 mt-4 bg-gray-50 rounded-lg">
@@ -341,7 +429,7 @@ function ModaleUtilisateur({
           />
           Compte actif
           <span className="text-xs text-gray-500">
-            — désactiver coupe l'accès sans effacer l'historique des ventes.
+            — le désactiver coupe l'accès sans effacer l'historique des ventes.
           </span>
         </label>
       )}
@@ -356,51 +444,62 @@ function ModaleUtilisateur({
   );
 }
 
-function ModaleMotDePasse({
+// ---------------------------------------------------------------------------
+
+/** Attribution d'un nouveau code ou mot de passe, selon le mode du compte. */
+function ModaleSecret({
   utilisateur, onFermer,
 }: { utilisateur: Profile | null; onFermer: () => void }) {
-  const [motDePasse, setMotDePasse] = useState("");
+  const [valeur, setValeur] = useState("");
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
   const [fait, setFait] = useState(false);
   const [copie, setCopie] = useState(false);
 
-  useEffect(() => { setMotDePasse(""); setErreur(null); setFait(false); setCopie(false); }, [utilisateur]);
+  useEffect(() => { setValeur(""); setErreur(null); setFait(false); setCopie(false); }, [utilisateur]);
 
   if (!utilisateur) return null;
+  const parCode = utilisateur.modeConnexion === "pin";
 
   const soumettre = async () => {
     setEnvoi(true);
     setErreur(null);
     try {
-      await reinitialiserMotDePasse(utilisateur.id, motDePasse);
+      if (parCode) await definirCodePin(utilisateur.id, valeur);
+      else await reinitialiserMotDePasse(utilisateur.id, valeur);
       setFait(true);
     } catch (e) {
-      setErreur(e instanceof Error ? e.message : "Réinitialisation impossible.");
+      setErreur(e instanceof Error ? e.message : "Modification impossible.");
     } finally {
       setEnvoi(false);
     }
   };
 
   const copier = () => {
-    void navigator.clipboard.writeText(motDePasse).then(() => {
+    void navigator.clipboard.writeText(valeur).then(() => {
       setCopie(true);
       window.setTimeout(() => setCopie(false), 2000);
     });
   };
 
+  const valide = parCode ? /^\d{6}$/.test(valeur) : valeur.length >= 8;
+
   return (
-    <Modale ouverte titre={`Mot de passe — ${utilisateur.fullName}`} onFermer={onFermer}>
+    <Modale
+      ouverte
+      titre={`${parCode ? "Nouveau code" : "Nouveau mot de passe"} — ${utilisateur.fullName}`}
+      onFermer={onFermer}
+    >
       <Erreur message={erreur} />
 
       {fait ? (
         <div className="space-y-4">
           <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-900">
-            Mot de passe réinitialisé. Communiquez-le à l'employé — il ne sera plus affiché après
-            la fermeture de cette fenêtre.
+            Enregistré. Communiquez-le à l'employé — il ne sera plus affiché après la fermeture de
+            cette fenêtre.
           </div>
-          <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg font-mono text-sm">
-            <span className="flex-1 break-all">{motDePasse}</span>
+          <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg font-mono text-lg tracking-widest">
+            <span className="flex-1 break-all text-center">{valeur}</span>
             <button onClick={copier} className="p-1.5 rounded hover:bg-gray-200 shrink-0" title="Copier">
               {copie ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4 text-gray-500" />}
             </button>
@@ -409,17 +508,27 @@ function ModaleMotDePasse({
         </div>
       ) : (
         <div className="space-y-4">
-          <Champ label="Nouveau mot de passe" aide="8 caractères minimum.">
+          <Champ
+            label={parCode ? "Code d'accès (6 chiffres)" : "Nouveau mot de passe"}
+            aide={parCode ? "Exactement 6 chiffres." : "8 caractères minimum."}
+          >
             <Saisie
-              type="text" value={motDePasse}
-              onChange={(e) => setMotDePasse(e.target.value)} autoFocus
+              type="text"
+              inputMode={parCode ? "numeric" : undefined}
+              maxLength={parCode ? 6 : undefined}
+              value={valeur}
+              onChange={(e) =>
+                setValeur(parCode ? e.target.value.replace(/\D/g, "").slice(0, 6) : e.target.value)
+              }
+              className={parCode ? "tabulaire tracking-[0.4em] text-center text-lg" : undefined}
+              autoFocus
             />
           </Champ>
           <Bouton
-            onClick={soumettre} chargement={envoi}
-            disabled={motDePasse.length < 8} icone={KeyRound} className="w-full"
+            onClick={soumettre} chargement={envoi} disabled={!valide}
+            icone={KeyRound} className="w-full"
           >
-            Réinitialiser le mot de passe
+            {parCode ? "Attribuer ce code" : "Réinitialiser le mot de passe"}
           </Bouton>
         </div>
       )}

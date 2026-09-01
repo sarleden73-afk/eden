@@ -1,7 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
-import { getMonProfil, type ProfilCourant } from "../services/db";
+import { getMonProfil, connexionParCode, type ProfilCourant } from "../services/db";
 import type { UserRole } from "../types";
 
 interface AuthContextType {
@@ -11,6 +11,8 @@ interface AuthContextType {
   /** Erreur de chargement du profil (compte sans profil, ou désactivé). */
   erreurProfil: string | null;
   connexion: (email: string, motDePasse: string) => Promise<void>;
+  /** Connexion du personnel : identifiant de profil + code à 6 chiffres. */
+  connexionAgent: (profileId: string, pin: string) => Promise<void>;
   deconnexion: () => Promise<void>;
   rafraichirProfil: () => Promise<void>;
   /** Raccourci d'autorisation, miroir des gardes de rôle de l'API. */
@@ -115,6 +117,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  /**
+   * Connexion du personnel : le serveur vérifie le code puis renvoie une
+   * session, qu'on installe ici. Le navigateur ne connaît jamais l'adresse
+   * technique du compte, il ne peut donc pas essayer des codes directement
+   * contre l'API d'authentification.
+   */
+  const connexionAgent = async (profileId: string, pin: string) => {
+    const { accessToken, refreshToken } = await connexionParCode(profileId, pin);
+    const { error } = await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    });
+    if (error) throw new Error("La session n'a pas pu être ouverte. Réessayez.");
+  };
+
   const deconnexion = async () => { await supabase.auth.signOut(); };
 
   const peut = useCallback(
@@ -125,7 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       session, profil, loading, erreurProfil,
-      connexion, deconnexion, rafraichirProfil: chargerProfil, peut,
+      connexion, connexionAgent, deconnexion, rafraichirProfil: chargerProfil, peut,
     }),
     [session, profil, loading, erreurProfil, chargerProfil, peut]
   );

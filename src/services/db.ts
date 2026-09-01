@@ -3,7 +3,7 @@ import type {
   Profile, Product, Category, Pack, Supplier, Sale, CashSession,
   CashMovement, StockMovement, Purchase, Expense, Order, AuditEntry,
   DashboardStats, ReportData, PeriodKey, EntrepriseSettings, CaisseSettings,
-  Establishment, SelectionEtablissement,
+  Establishment, SelectionEtablissement, AgentConnexion, LivreComptable,
 } from "../types";
 
 // ============================================================================
@@ -84,6 +84,37 @@ export function parametresPeriode(
   return `?${p.toString()}`;
 }
 
+// --- Connexion du personnel par nom + code ---------------------------------
+// Ces trois appels précèdent toute session : ils ne joignent donc aucun jeton.
+// Le serveur ne renvoie jamais l'adresse technique d'un compte à code, et
+// s'authentifie lui-même auprès de Supabase avant de transmettre la session.
+
+async function appelPublic<T>(chemin: string, options: RequestInit = {}): Promise<T> {
+  const reponse = await fetch(`/api/auth${chemin}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...options.headers },
+  });
+  if (!reponse.ok) {
+    const corps = await reponse.json().catch(() => ({}));
+    throw new ApiError(corps.error || `Erreur ${reponse.status}`, reponse.status);
+  }
+  return reponse.json();
+}
+
+export const getEtablissementsConnexion = () =>
+  appelPublic<{ id: number; nom: string; couleur: string }[]>("/etablissements");
+
+export const getPersonnelConnexion = (establishmentId?: number) =>
+  appelPublic<AgentConnexion[]>(
+    `/personnel${establishmentId ? `?establishmentId=${establishmentId}` : ""}`
+  );
+
+export const connexionParCode = (profileId: string, pin: string) =>
+  appelPublic<{ accessToken: string; refreshToken: string }>("/pin", {
+    method: "POST",
+    body: JSON.stringify({ profileId, pin }),
+  });
+
 // --- Profil et utilisateurs (§5.1) -----------------------------------------
 
 export type ProfilCourant = Profile & { peutChangerEtablissement: boolean };
@@ -91,10 +122,21 @@ export type ProfilCourant = Profile & { peutChangerEtablissement: boolean };
 export const getMonProfil = () => get<ProfilCourant>("/me");
 export const getUtilisateurs = () => get<Profile[]>("/users");
 export const creerUtilisateur = (corps: {
-  email: string; password: string; fullName: string; role: string;
-  establishmentId?: number | null; poste?: string; telephone?: string;
-  salaire?: number; dateEntree?: string;
+  fullName: string;
+  role: string;
+  establishmentId?: number | null;
+  fonction?: string;
+  dateEntree?: string;
+  /** Encadrement uniquement. */
+  email?: string;
+  password?: string;
+  /** Personnel de terrain uniquement : 6 chiffres. */
+  pin?: string;
 }) => post<Profile>("/users", corps);
+
+/** Attribue un nouveau code à un compte de terrain. */
+export const definirCodePin = (id: string, pin: string) =>
+  post<{ ok: boolean }>(`/users/${id}/pin`, { pin });
 export const modifierUtilisateur = (id: string, corps: Partial<Profile> & { motif?: string }) =>
   patch<Profile>(`/users/${id}`, corps);
 export const reinitialiserMotDePasse = (id: string, password: string) =>
@@ -242,6 +284,11 @@ export const getRapport = (
   periode: PeriodKey,
   options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
 ) => get<ReportData>(`/reports${parametresPeriode(periode, options)}`);
+
+export const getLivreComptable = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<LivreComptable>(`/ledger${parametresPeriode(periode, options)}`);
 
 export const getJournal = (filtres: { entite?: string; action?: string } = {}) => {
   const p = new URLSearchParams();

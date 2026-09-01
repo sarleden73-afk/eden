@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import express, { Response } from "express";
 import { supabase } from "./lib/supabase-server.js";
 import { requireAuth, AuthRequest } from "./middleware/auth.js";
@@ -23,6 +24,22 @@ import type {
 // (propriétaire, responsable transversal) accède à tous les établissements et
 // choisit explicitement d'en voir un seul ou le cumul.
 // ============================================================================
+
+// Libellés dupliqués côté serveur : le module de types est partagé avec le
+// navigateur, mais l'importer ici pour deux tables de correspondance ferait
+// entrer du code d'interface dans la fonction serverless.
+const EXPENSE_LABELS_SERVEUR: Record<string, string> = {
+  electricite: "Électricité", internet: "Internet", loyer: "Loyer",
+  salaires: "Salaires", transport: "Transport", carburant: "Carburant",
+  achat_marchandises: "Achat de marchandises", matieres_premieres: "Matières premières",
+  entretien: "Entretien", reparation: "Réparation",
+  fournitures_bureau: "Fournitures de bureau", autre: "Autres dépenses",
+};
+
+const CASH_MOVEMENT_LABELS_SERVEUR: Record<string, string> = {
+  entree: "Entrée d'argent", retrait: "Retrait", depot: "Dépôt",
+  remboursement: "Remboursement", autre: "Autre mouvement",
+};
 
 const TOUS: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
 const ENCAISSENT: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
@@ -134,6 +151,47 @@ function filtrerEtablissement<T extends { eq: (c: string, v: unknown) => T }>(
 ): T {
   return id === null ? requete : requete.eq(colonne, id);
 }
+
+// --- Protection contre les essais de code en série --------------------------
+// Un code à six chiffres se devine en un million d'essais ; sans limite, un
+// script y arriverait en quelques heures. Le compteur est en mémoire du
+// processus : sur une plateforme sans état comme Vercel il ne couvre pas
+// toutes les instances, mais il rend l'attaque bien plus lente et coûteuse.
+// Une limitation côté base serait le complément naturel si le besoin s'en fait
+// sentir.
+
+const MAX_TENTATIVES = 5;
+const FENETRE_MS = 15 * 60_000;
+
+const tentatives = new Map<string, { nb: number; depuis: number }>();
+
+function verifierTentatives(cle: string): string | null {
+  const t = tentatives.get(cle);
+  if (!t) return null;
+  if (Date.now() - t.depuis > FENETRE_MS) {
+    tentatives.delete(cle);
+    return null;
+  }
+  if (t.nb >= MAX_TENTATIVES) {
+    const minutes = Math.ceil((FENETRE_MS - (Date.now() - t.depuis)) / 60_000);
+    return `Trop d'essais. Réessayez dans ${minutes} minute(s) ou demandez un nouveau code.`;
+  }
+  return null;
+}
+
+function enregistrerEchec(cle: string) {
+  const t = tentatives.get(cle);
+  if (!t || Date.now() - t.depuis > FENETRE_MS) {
+    tentatives.set(cle, { nb: 1, depuis: Date.now() });
+  } else {
+    t.nb += 1;
+  }
+}
+
+const reinitialiserTentatives = (cle: string) => tentatives.delete(cle);
+
+/** Adresse technique d'un compte à code PIN : jamais montrée à l'utilisateur. */
+const adresseTechnique = () => `agent-${randomUUID().slice(0, 12)}@staff.eden.local`;
 
 // --- Traçabilité (§5.10) ----------------------------------------------------
 
@@ -307,6 +365,81 @@ export function createApiApp() {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
 
+  // -------------------------------------------------------------------------
+  // Connexion du personnel par nom + code PIN
+  // -------------------------------------------------------------------------
+  // Ces trois routes précèdent volontairement requireAuth : on ne peut pas
+  // exiger une session pour afficher l'écran qui sert à en obtenir une.
+  // Elles n'exposent que ce que l'écran de connexion doit afficher — un nom et
+  // un établissement — et jamais l'adresse technique du compte.
+
+  const publique = express.Router();
+
+  publique.get("/etablissements", route(async (_req, res) => {
+    const { data, error } = await supabase
+      .from("establishments").select("id, nom, couleur").eq("actif", true).order("ordre");
+    if (error) throw new Error(error.message);
+    res.json(toCamelCaseArray(data ?? []));
+  }));
+
+  publique.get("/personnel", route(async (req, res) => {
+    let q = supabase
+      .from("profiles").select("id, full_name, fonction, role, establishment_id")
+      .eq("mode_connexion", "pin").eq("actif", true).order("full_name");
+
+    const etab = Number(req.query.establishmentId);
+    if (Number.isInteger(etab) && etab > 0) q = q.eq("establishment_id", etab);
+
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    res.json(toCamelCaseArray(data ?? []));
+  }));
+
+  /**
+   * Échange nom + PIN contre une session.
+   *
+   * L'adresse technique du compte n'est jamais renvoyée au navigateur : c'est
+   * le serveur qui la retrouve et s'authentifie auprès de Supabase, puis
+   * transmet la session obtenue. Le PIN ne peut donc pas être essayé
+   * directement contre l'API d'authentification depuis l'extérieur.
+   */
+  publique.post("/pin", route(async (req, res) => {
+    const { profileId, pin } = req.body;
+    if (!profileId || !pin) {
+      return res.status(400).json({ error: "Sélectionnez votre nom et saisissez votre code." });
+    }
+
+    const blocage = verifierTentatives(String(profileId));
+    if (blocage) return res.status(429).json({ error: blocage });
+
+    const { data: profil } = await supabase
+      .from("profiles").select("email, actif, mode_connexion")
+      .eq("id", profileId).maybeSingle();
+
+    // Message identique dans tous les cas d'échec : distinguer « compte
+    // inconnu » de « code erroné » aiderait qui essaierait des codes au hasard.
+    const echec = () => {
+      enregistrerEchec(String(profileId));
+      return res.status(401).json({ error: "Code incorrect." });
+    };
+
+    if (!profil || !profil.actif || profil.mode_connexion !== "pin") return echec();
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: profil.email,
+      password: String(pin),
+    });
+    if (error || !data.session) return echec();
+
+    reinitialiserTentatives(String(profileId));
+    res.json({
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+    });
+  }));
+
+  app.use("/api/auth", publique);
+
   const api = express.Router();
   api.use(requireAuth, loadProfile);
 
@@ -413,29 +546,53 @@ export function createApiApp() {
     );
   }));
 
+  /**
+   * Crée un compte. Le mode de connexion découle du rôle :
+   *  - propriétaire et responsable saisissent une adresse et un mot de passe ;
+   *    ils accèdent à la comptabilité et aux comptes, cela le justifie ;
+   *  - le personnel de terrain reçoit un code à 6 chiffres et une adresse
+   *    technique générée, qu'il ne verra jamais. Il se connecte en choisissant
+   *    son nom dans une liste.
+   */
   api.post("/users", requireRole(...ADMIN), route(async (req, res) => {
-    const {
-      email, password, fullName, role, establishmentId, poste, telephone, salaire, dateEntree,
-    } = req.body;
+    const { email, password, pin, fullName, role, establishmentId, fonction, dateEntree } = req.body;
 
-    if (!email || !password || !fullName) {
-      return res.status(400).json({ error: "Email, mot de passe et nom complet sont obligatoires." });
-    }
-    if (String(password).length < 8) {
-      return res.status(400).json({ error: "Le mot de passe doit faire au moins 8 caractères." });
+    if (!fullName || !String(fullName).trim()) {
+      return res.status(400).json({ error: "Le nom complet est obligatoire." });
     }
 
-    // Un caissier ou un technicien travaille dans un établissement précis :
-    // sans rattachement, il aurait accès à tous, ce que le §5.1 exclut.
+    const roleFinal: UserRole = role ?? "caissier";
+    const parPin = roleFinal === "caissier" || roleFinal === "technicien";
+
+    // Un profil de terrain travaille dans un établissement précis : sans
+    // rattachement, il aurait accès à tous, ce que le §5.1 exclut.
     const rattachement = establishmentId ? Number(establishmentId) : null;
-    if ((role === "caissier" || role === "technicien") && !rattachement) {
-      return res.status(400).json({
-        error: "Un caissier ou un technicien doit être rattaché à un établissement.",
-      });
+    if (parPin && !rattachement) {
+      return res.status(400).json({ error: "Ce rôle doit être rattaché à un établissement." });
+    }
+
+    let identifiant: string;
+    let secret: string;
+
+    if (parPin) {
+      if (!/^\d{6}$/.test(String(pin ?? ""))) {
+        return res.status(400).json({ error: "Le code doit comporter exactement 6 chiffres." });
+      }
+      identifiant = adresseTechnique();
+      secret = String(pin);
+    } else {
+      if (!email || !password) {
+        return res.status(400).json({ error: "Adresse e-mail et mot de passe sont obligatoires." });
+      }
+      if (String(password).length < 8) {
+        return res.status(400).json({ error: "Le mot de passe doit faire au moins 8 caractères." });
+      }
+      identifiant = String(email).trim();
+      secret = String(password);
     }
 
     const { data: auth, error: authErr } = await supabase.auth.admin.createUser({
-      email, password, email_confirm: true,
+      email: identifiant, password: secret, email_confirm: true,
     });
     if (authErr) return res.status(400).json({ error: authErr.message });
 
@@ -443,14 +600,13 @@ export function createApiApp() {
       .from("profiles")
       .insert({
         id: auth.user.id,
-        full_name: fullName,
-        email,
-        role: role ?? "caissier",
+        full_name: String(fullName).trim(),
+        email: identifiant,
+        role: roleFinal,
+        mode_connexion: parPin ? "pin" : "email",
         establishment_id: rattachement,
-        poste: poste ?? null,
-        telephone: telephone ?? null,
-        salaire: salaire ?? null,
-        date_entree: dateEntree ?? null,
+        fonction: fonction?.trim() || null,
+        date_entree: dateEntree || null,
       })
       .select().single();
 
@@ -462,18 +618,40 @@ export function createApiApp() {
 
     invaliderProfils();
     journaliser(req.profil!, "creation_utilisateur", "profiles", data.id, {
-      apres: { email, role, establishmentId: rattachement },
+      apres: { role: roleFinal, mode: parPin ? "pin" : "email", establishmentId: rattachement },
     });
     res.status(201).json(toCamelCase(data));
+  }));
+
+  /** Attribue un nouveau code à un compte de terrain. */
+  api.post("/users/:id/pin", requireRole(...ADMIN), route(async (req, res) => {
+    const { pin } = req.body;
+    if (!/^\d{6}$/.test(String(pin ?? ""))) {
+      return res.status(400).json({ error: "Le code doit comporter exactement 6 chiffres." });
+    }
+
+    const { data: profil } = await supabase
+      .from("profiles").select("mode_connexion").eq("id", req.params.id).maybeSingle();
+    if (!profil) return res.status(404).json({ error: "Compte introuvable." });
+    if (profil.mode_connexion !== "pin") {
+      return res.status(400).json({ error: "Ce compte se connecte par e-mail et mot de passe." });
+    }
+
+    const { error } = await supabase.auth.admin.updateUserById(req.params.id, {
+      password: String(pin),
+    });
+    if (error) return res.status(400).json({ error: error.message });
+
+    reinitialiserTentatives(String(req.params.id));
+    journaliser(req.profil!, "reinitialisation_code", "profiles", req.params.id);
+    res.json({ ok: true });
   }));
 
   api.patch("/users/:id", requireRole(...ADMIN), route(async (req, res) => {
     const { data: avant } = await supabase
       .from("profiles").select("*").eq("id", req.params.id).single();
 
-    const champs = [
-      "fullName", "role", "establishmentId", "poste", "telephone", "salaire", "dateEntree", "actif",
-    ];
+    const champs = ["fullName", "role", "establishmentId", "fonction", "dateEntree", "actif"];
     const corps = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => champs.includes(k))
     ) as Record<string, unknown>;
@@ -2007,6 +2185,139 @@ export function createApiApp() {
       })),
     };
     res.json(rapport);
+  }));
+
+  // -------------------------------------------------------------------------
+  // §5.13 Écritures comptables — le détail derrière les totaux
+  // -------------------------------------------------------------------------
+
+  /**
+   * Journal chronologique de tout ce qui entre et sort.
+   *
+   * Le compte de résultat donne des totaux ; cette route donne les lignes qui
+   * les composent, pour qu'un chiffre puisse toujours être justifié. Quatre
+   * origines s'y mêlent :
+   *   - les ventes validées (entrée d'argent) ;
+   *   - les dépenses (sortie) ;
+   *   - les achats fournisseurs, à hauteur de ce qui a réellement été payé —
+   *     un achat à crédit ne sort rien de la caisse tant qu'il n'est pas réglé ;
+   *   - les mouvements de caisse manuels, hors ventes et dépenses, qui y sont
+   *     déjà comptés et feraient double emploi.
+   */
+  api.get("/ledger", requireRole(...VALIDENT), route(async (req, res) => {
+    const { debut, fin, debutJour, finJour, libelle } =
+      bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let qVentes = supabase.from("sales")
+      .select("id, numero_recu, establishment_id, total, payment_method, created_at, vendeur_id")
+      .gte("created_at", debut.toISOString()).lt("created_at", fin.toISOString())
+      .eq("statut", "validee");
+    qVentes = filtrerEtablissement(qVentes, portee.id);
+
+    let qDepenses = supabase.from("expenses")
+      .select("id, establishment_id, categorie, montant, motif, date_depense, payment_method, effectue_par, valide_par")
+      .gte("date_depense", debutJour).lte("date_depense", finJour);
+    qDepenses = filtrerEtablissement(qDepenses, portee.id);
+
+    let qAchats = supabase.from("purchases")
+      .select("id, numero, establishment_id, montant_paye, montant_total, date_achat, payment_method, effectue_par, supplier_id")
+      .gte("date_achat", debutJour).lte("date_achat", finJour);
+    qAchats = filtrerEtablissement(qAchats, portee.id);
+
+    const [{ data: ventes }, { data: depenses }, { data: achats }, etabs, noms] =
+      await Promise.all([qVentes, qDepenses, qAchats, nomsEtablissements(), nomsEmployes()]);
+
+    // Mouvements de caisse manuels : on part des sessions de la portée pour ne
+    // pas ramener ceux d'un autre établissement.
+    let qSessions = supabase.from("cash_sessions").select("id, establishment_id");
+    qSessions = filtrerEtablissement(qSessions, portee.id);
+    const { data: sessions } = await qSessions;
+    const etabParSession = new Map((sessions ?? []).map((s) => [s.id, s.establishment_id as number]));
+
+    let mouvements: Record<string, unknown>[] = [];
+    if (etabParSession.size) {
+      const { data } = await supabase.from("cash_movements")
+        .select("id, session_id, type, montant, motif, payment_method, created_at, created_by")
+        .in("session_id", [...etabParSession.keys()])
+        .in("type", ["entree", "retrait", "depot", "remboursement", "autre"])
+        .gte("created_at", debut.toISOString()).lt("created_at", fin.toISOString());
+      mouvements = data ?? [];
+    }
+
+    const { data: fournisseurs } = await supabase.from("suppliers").select("id, nom");
+    const nomFournisseur = new Map((fournisseurs ?? []).map((f) => [f.id, f.nom]));
+
+    const ecritures = [
+      ...(ventes ?? []).map((v) => ({
+        date: v.created_at as string,
+        type: "vente" as const,
+        reference: v.numero_recu as string,
+        libelle: "Encaissement de vente",
+        etablissement: etabs.get(v.establishment_id as number)?.nom ?? "—",
+        entree: Number(v.total),
+        sortie: 0,
+        moyen: v.payment_method as PaymentMethod,
+        auteur: noms.get(v.vendeur_id as string) ?? "—",
+        statut: null as string | null,
+      })),
+      ...(depenses ?? []).map((d) => ({
+        date: `${d.date_depense}T12:00:00.000Z`,
+        type: "depense" as const,
+        reference: `DEP-${d.id}`,
+        libelle: `${EXPENSE_LABELS_SERVEUR[d.categorie as ExpenseCategory] ?? d.categorie} — ${d.motif}`,
+        etablissement: etabs.get(d.establishment_id as number)?.nom ?? "—",
+        entree: 0,
+        sortie: Number(d.montant),
+        moyen: d.payment_method as PaymentMethod,
+        auteur: noms.get(d.effectue_par as string) ?? "—",
+        statut: d.valide_par ? "Validée" : "En attente de validation",
+      })),
+      ...(achats ?? [])
+        // Un achat entièrement à crédit ne constitue pas une sortie d'argent :
+        // il n'apparaît que le jour où il est réglé.
+        .filter((a) => Number(a.montant_paye) > 0)
+        .map((a) => ({
+          date: `${a.date_achat}T12:00:00.000Z`,
+          type: "achat" as const,
+          reference: a.numero as string,
+          libelle: `Achat fournisseur${a.supplier_id ? ` — ${nomFournisseur.get(a.supplier_id) ?? ""}` : ""}`,
+          etablissement: etabs.get(a.establishment_id as number)?.nom ?? "—",
+          entree: 0,
+          sortie: Number(a.montant_paye),
+          moyen: a.payment_method as PaymentMethod,
+          auteur: noms.get(a.effectue_par as string) ?? "—",
+          statut: Number(a.montant_paye) < Number(a.montant_total)
+            ? `Reste dû ${Number(a.montant_total) - Number(a.montant_paye)}`
+            : null,
+        })),
+      ...mouvements.map((m) => {
+        const montant = Number(m.montant);
+        return {
+          date: m.created_at as string,
+          type: "mouvement" as const,
+          reference: `MVT-${m.id}`,
+          libelle: `${CASH_MOVEMENT_LABELS_SERVEUR[m.type as string] ?? "Mouvement"} — ${m.motif ?? ""}`,
+          etablissement: etabs.get(etabParSession.get(m.session_id as number) as number)?.nom ?? "—",
+          entree: montant > 0 ? montant : 0,
+          sortie: montant < 0 ? -montant : 0,
+          moyen: m.payment_method as PaymentMethod,
+          auteur: noms.get(m.created_by as string) ?? "—",
+          statut: null as string | null,
+        };
+      }),
+    ].sort((a, b) => b.date.localeCompare(a.date));
+
+    res.json({
+      periode: libelle,
+      etablissement: await nomEtablissement(portee.id),
+      ecritures,
+      totaux: {
+        entrees: ecritures.reduce((s, e) => s + e.entree, 0),
+        sorties: ecritures.reduce((s, e) => s + e.sortie, 0),
+      },
+    });
   }));
 
   // -------------------------------------------------------------------------

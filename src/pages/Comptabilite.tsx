@@ -2,14 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 import { Calculator, FileDown, ArrowDown, Info, Plus } from "lucide-react";
 import Layout from "../components/Layout";
 import {
-  PageHeader, Card, Bouton, Erreur, Chargement, Tableau, SelecteurPeriode,
+  PageHeader, Card, Bouton, Erreur, Chargement, Tableau, SelecteurPeriode, Badge,
 } from "../components/ui";
-import { getRapport } from "../services/db";
-import { fcfa, nombre, aujourdhui } from "../lib/format";
+import { getRapport, getLivreComptable } from "../services/db";
+import { fcfa, nombre, dateCourte, aujourdhui } from "../lib/format";
 import { exporterPDF } from "../lib/export";
 import ModaleDepense from "../components/ModaleDepense";
 import { cn } from "../lib/utils";
-import { EXPENSE_LABELS, type ReportData, type PeriodKey } from "../types";
+import {
+  EXPENSE_LABELS, PAYMENT_LABELS, TYPE_ECRITURE_LABELS,
+  type ReportData, type PeriodKey, type LivreComptable, type TypeEcriture,
+} from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
 
 /**
@@ -17,6 +20,13 @@ import { useEtablissement } from "../contexts/EtablissementContext";
  * La cascade demandée au cahier des charges :
  *   Chiffre d'affaires → Coût des marchandises → Marge brute → Dépenses → Résultat.
  */
+const TONS_ECRITURE: Record<TypeEcriture, "succes" | "danger" | "alerte" | "neutre"> = {
+  vente: "succes",
+  depense: "danger",
+  achat: "alerte",
+  mouvement: "neutre",
+};
+
 export default function Comptabilite() {
   const { selection, libelle } = useEtablissement();
   const [periode, setPeriode] = useState<PeriodKey>("mois");
@@ -26,11 +36,17 @@ export default function Comptabilite() {
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [nouvelleDepense, setNouvelleDepense] = useState(false);
+  const [livre, setLivre] = useState<LivreComptable | null>(null);
 
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      setRapport(await getRapport(periode, { debut, fin, etablissement: selection }));
+      const [r, l] = await Promise.all([
+        getRapport(periode, { debut, fin, etablissement: selection }),
+        getLivreComptable(periode, { debut, fin, etablissement: selection }),
+      ]);
+      setRapport(r);
+      setLivre(l);
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
@@ -261,6 +277,75 @@ export default function Comptabilite() {
               Ces montants concernent les achats datés de la période. Une dette contractée plus tôt
               et non réglée n'y figure pas — la liste complète est dans Achats, colonne « Restant dû ».
             </p>
+          </Card>
+
+          {/* --- Écritures comptables --- */}
+          {/* Le compte de résultat donne des totaux ; ce journal donne les
+              lignes qui les composent, pour qu'un chiffre puisse toujours être
+              justifié devant quelqu'un. */}
+          <Card>
+            <div className="px-5 py-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-gray-900">Écritures comptables</h2>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Toutes les entrées et sorties d'argent de la période, dans l'ordre.
+                </p>
+              </div>
+              {livre && (
+                <div className="flex gap-4 text-sm">
+                  <span className="text-gray-600">
+                    Entrées <strong className="text-green-700 tabulaire">{fcfa(livre.totaux.entrees)}</strong>
+                  </span>
+                  <span className="text-gray-600">
+                    Sorties <strong className="text-red-700 tabulaire">{fcfa(livre.totaux.sorties)}</strong>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {!livre ? (
+              <Chargement texte="Chargement des écritures…" />
+            ) : livre.ecritures.length === 0 ? (
+              <p className="p-6 text-sm text-center text-gray-500">
+                Aucun mouvement d'argent sur cette période.
+              </p>
+            ) : (
+              <Tableau
+                entetes={["Date", "Référence", "Libellé", "Établissement", "Moyen", "Par", " Entrée", " Sortie"]}
+              >
+                {livre.ecritures.map((e, i) => (
+                  <tr key={`${e.reference}-${i}`} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(e.date)}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium text-gray-900 whitespace-nowrap">{e.reference}</div>
+                      <Badge ton={TONS_ECRITURE[e.type]}>{TYPE_ECRITURE_LABELS[e.type]}</Badge>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700 max-w-sm">
+                      <div className="truncate" title={e.libelle}>{e.libelle}</div>
+                      {e.statut && <div className="text-xs text-amber-700 mt-0.5">{e.statut}</div>}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{e.etablissement}</td>
+                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{PAYMENT_LABELS[e.moyen]}</td>
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{e.auteur}</td>
+                    <td className="px-4 py-3 text-right tabulaire text-green-700 whitespace-nowrap">
+                      {e.entree > 0 ? fcfa(e.entree) : ""}
+                    </td>
+                    <td className="px-4 py-3 text-right tabulaire text-red-700 whitespace-nowrap">
+                      {e.sortie > 0 ? fcfa(e.sortie) : ""}
+                    </td>
+                  </tr>
+                ))}
+                <tr className="bg-gray-50 font-semibold">
+                  <td className="px-4 py-3" colSpan={6}>Total de la période</td>
+                  <td className="px-4 py-3 text-right tabulaire text-green-700">
+                    {fcfa(livre.totaux.entrees)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabulaire text-red-700">
+                    {fcfa(livre.totaux.sorties)}
+                  </td>
+                </tr>
+              </Tableau>
+            )}
           </Card>
         </div>
       ) : null}

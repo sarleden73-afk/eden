@@ -102,14 +102,19 @@ export const ROLES_MULTI_ETABLISSEMENTS: UserRole[] = ["admin", "responsable"];
 export interface Profile {
   id: string;
   fullName: string;
+  /** Adresse réelle pour l.encadrement, adresse technique pour le terrain. */
   email: string;
   role: UserRole;
+  /**
+   * email = identifiant + mot de passe (propriétaire, responsable).
+   * pin   = nom choisi dans une liste + code à 6 chiffres (personnel).
+   */
+  modeConnexion: "email" | "pin";
+  /** Intitulé du poste tel qu.on le nomme : purement descriptif. */
+  fonction: string | null;
   /** null = accès à tous les établissements (propriétaire, responsable transversal). */
   establishmentId: number | null;
   etablissementNom?: string | null;
-  poste: string | null;
-  telephone: string | null;
-  salaire: number | null;
   dateEntree: string | null;
   actif: boolean;
   createdAt: string;
@@ -459,3 +464,45 @@ export interface ReportData {
 
 /** Périodes proposées au tableau de bord et aux rapports (§5.11). */
 export type PeriodKey = "jour" | "semaine" | "mois" | "annee" | "personnalise";
+
+// --- Écritures comptables (§5.13) ------------------------------------------
+
+export type TypeEcriture = "vente" | "depense" | "achat" | "mouvement";
+
+export const TYPE_ECRITURE_LABELS: Record<TypeEcriture, string> = {
+  vente: "Vente",
+  depense: "Dépense",
+  achat: "Achat",
+  mouvement: "Mouvement de caisse",
+};
+
+/** Une ligne du journal comptable : ce qui justifie un total. */
+export interface EcritureComptable {
+  date: string;
+  type: TypeEcriture;
+  reference: string;
+  libelle: string;
+  etablissement: string;
+  entree: number;
+  sortie: number;
+  moyen: PaymentMethod;
+  auteur: string;
+  /** Précision contextuelle : validation en attente, reste dû… */
+  statut: string | null;
+}
+
+export interface LivreComptable {
+  periode: string;
+  etablissement: string;
+  ecritures: EcritureComptable[];
+  totaux: { entrees: number; sorties: number };
+}
+
+/** Personnel proposé à l'écran de connexion par code. */
+export interface AgentConnexion {
+  id: string;
+  fullName: string;
+  fonction: string | null;
+  role: UserRole;
+  establishmentId: number | null;
+}

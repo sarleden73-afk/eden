@@ -14,7 +14,7 @@ import {
 } from "../components/ui";
 import { getRapport } from "../services/db";
 import { fcfa, nombre, dateCourte, aujourdhui } from "../lib/format";
-import { exporterCSV, exporterPDF } from "../lib/export";
+import { exporterPDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import {
@@ -52,10 +52,10 @@ export default function Rapports() {
     if (!rapport) return;
     // Un seul fichier, sections empilées : plus simple à archiver et à envoyer
     // que cinq exports séparés.
-    const lignes: unknown[][] = [];
-    const section = (titre: string, entetes: string[], donnees: unknown[][]) => {
-      lignes.push([titre], entetes, ...donnees, []);
-    };
+    const sections: { titre: string; entetes: string[]; lignes: (string | number)[][]; colonnesChiffrees?: number[] }[] = [];
+    const section = (
+      titre: string, entetes: string[], donnees: (string | number)[][], colonnesChiffrees?: number[]
+    ) => sections.push({ titre, entetes, lignes: donnees, colonnesChiffrees });
 
     section("CHIFFRE D AFFAIRES PAR ETABLISSEMENT",
       ["Établissement", "CA", "Coût marchandises", "Marge", "Nb ventes"],
@@ -97,7 +97,20 @@ export default function Rapports() {
         ["Achats — restant dû", rapport.achats.restant],
       ]);
 
-    exporterCSV("rapport-eden", [`${libelle} — ${rapport.periode.libelle}`], lignes);
+    void exporterPDF({
+      fichier: "rapport-eden",
+      titre: "Rapport d'activité",
+      perimetre: libelle,
+      sousTitre: rapport.periode.libelle,
+      paysage: true,
+      synthese: [
+        { libelle: "Chiffre d'affaires", valeur: fcfa(rapport.totaux.ca) },
+        { libelle: "Ventes", valeur: nombre(rapport.totaux.nbVentes) },
+        { libelle: "Dépenses", valeur: fcfa(rapport.totaux.depenses) },
+        { libelle: "Résultat", valeur: fcfa(rapport.totaux.resultat) },
+      ],
+      sections,
+    });
   };
 
   return (
@@ -108,7 +121,7 @@ export default function Rapports() {
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
         <Bouton variante="secondaire" icone={FileDown} onClick={exporterTout} disabled={!rapport}>
-          Excel
+          PDF
         </Bouton>
         <Bouton variante="secondaire" icone={Printer} onClick={exporterPDF} disabled={!rapport}>
           PDF

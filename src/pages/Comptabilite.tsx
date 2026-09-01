@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Calculator, Printer, FileDown, ArrowDown, Info } from "lucide-react";
+import { Calculator, FileDown, ArrowDown, Info, Plus } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Erreur, Chargement, Tableau, SelecteurPeriode,
 } from "../components/ui";
 import { getRapport } from "../services/db";
 import { fcfa, nombre, aujourdhui } from "../lib/format";
-import { exporterCSV, exporterPDF } from "../lib/export";
+import { exporterPDF } from "../lib/export";
+import ModaleDepense from "../components/ModaleDepense";
 import { cn } from "../lib/utils";
 import { EXPENSE_LABELS, type ReportData, type PeriodKey } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -24,6 +25,7 @@ export default function Comptabilite() {
   const [rapport, setRapport] = useState<ReportData | null>(null);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
+  const [nouvelleDepense, setNouvelleDepense] = useState(false);
 
   const recharger = useCallback(async () => {
     setChargement(true);
@@ -42,23 +44,58 @@ export default function Comptabilite() {
   const exporter = () => {
     if (!rapport) return;
     const t = rapport.totaux;
-    exporterCSV(
-      "comptabilite-eden",
-      ["Poste", "Montant (FCFA)"],
-      [
-        ["Chiffre d'affaires", t.ca],
-        ["Coût des marchandises vendues", -t.coutMarchandises],
-        ["MARGE BRUTE", t.margeBrute],
-        ...rapport.depensesParCategorie.map((d) => [`  ${EXPENSE_LABELS[d.categorie]}`, -d.montant]),
-        ["Total des dépenses", -t.depenses],
-        ["RESULTAT ESTIMATIF", t.resultat],
-        [],
-        ["Nombre de ventes", t.nbVentes],
-        ["Panier moyen", t.panierMoyen],
-        ["Achats de la période", rapport.achats.total],
-        ["Dettes fournisseurs restantes", rapport.achats.restant],
-      ]
-    );
+    void exporterPDF({
+      fichier: "comptabilite-eden",
+      titre: "Compte de résultat simplifié",
+      perimetre: libelle,
+      sousTitre: rapport.periode.libelle,
+      synthese: [
+        { libelle: "Chiffre d'affaires", valeur: fcfa(t.ca) },
+        { libelle: "Marge brute", valeur: fcfa(t.margeBrute) },
+        { libelle: "Dépenses", valeur: fcfa(t.depenses) },
+        { libelle: "Résultat", valeur: fcfa(t.resultat) },
+      ],
+      sections: [
+        {
+          titre: "Du chiffre d'affaires au résultat",
+          entetes: ["Poste", "Montant (FCFA)"],
+          colonnesChiffrees: [1],
+          lignes: [
+            ["Chiffre d'affaires", t.ca],
+            ["Coût des marchandises vendues", -t.coutMarchandises],
+            ["Marge brute", t.margeBrute],
+            ["Dépenses de fonctionnement", -t.depenses],
+            ["Résultat estimatif", t.resultat],
+          ],
+        },
+        {
+          titre: "Résultat par établissement",
+          entetes: ["Établissement", "Ventes", "CA", "Coût marchandises", "Marge brute"],
+          colonnesChiffrees: [1, 2, 3, 4],
+          lignes: rapport.parEtablissement.map((p) => [p.nom, p.nbVentes, p.ca, p.cout, p.marge]),
+        },
+        {
+          titre: "Détail des charges",
+          entetes: ["Poste de charge", "Nombre", "Montant"],
+          colonnesChiffrees: [1, 2],
+          lignes: rapport.depensesParCategorie.map((d) => [
+            EXPENSE_LABELS[d.categorie], d.nb, d.montant,
+          ]),
+        },
+        {
+          titre: "Engagements fournisseurs",
+          entetes: ["Indicateur", "Montant"],
+          colonnesChiffrees: [1],
+          lignes: [
+            ["Achats de la période", rapport.achats.total],
+            ["Déjà réglé", rapport.achats.paye],
+            ["Restant dû", rapport.achats.restant],
+            ["Nombre de ventes", t.nbVentes],
+            ["Panier moyen", t.panierMoyen],
+          ],
+        },
+      ],
+    });
   };
 
   const t = rapport?.totaux;
@@ -72,8 +109,8 @@ export default function Comptabilite() {
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!rapport}>Excel</Bouton>
-        <Bouton variante="secondaire" icone={Printer} onClick={exporterPDF} disabled={!rapport}>PDF</Bouton>
+        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!rapport}>PDF</Bouton>
+        <Bouton icone={Plus} onClick={() => setNouvelleDepense(true)}>Nouvelle dépense</Bouton>
       </PageHeader>
 
       <Erreur message={erreur} />
@@ -227,6 +264,14 @@ export default function Comptabilite() {
           </Card>
         </div>
       ) : null}
+
+      {/* Saisir une sortie d'argent depuis la comptabilité elle-même : c'est là
+          qu'on constate un résultat, donc là qu'on veut corriger un oubli. */}
+      <ModaleDepense
+        ouverte={nouvelleDepense}
+        onFermer={() => setNouvelleDepense(false)}
+        onSucces={() => { setNouvelleDepense(false); void recharger(); }}
+      />
     </Layout>
   );
 }

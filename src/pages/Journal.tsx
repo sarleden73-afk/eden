@@ -6,7 +6,7 @@ import {
 } from "../components/ui";
 import { getJournal } from "../services/db";
 import { dateHeure } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import type { AuditEntry } from "../types";
 
 /**
@@ -88,7 +88,7 @@ export default function Journal() {
   const sensibles = entrees.filter((e) => ACTIONS_SENSIBLES.has(e.action));
 
   const exporter = () =>
-    exporterCSV(
+    exporterListePDF(
       "journal-eden",
       ["Date et heure", "Utilisateur", "Action", "Domaine", "Référence", "Motif"],
       entrees.map((e) => [
@@ -116,7 +116,7 @@ export default function Journal() {
           {Object.entries(LIBELLES_ACTION).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </Liste>
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!entrees.length}>
-          Excel
+          PDF
         </Bouton>
       </PageHeader>
 

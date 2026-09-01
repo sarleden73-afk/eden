@@ -1,6 +1,6 @@
 import { supabase } from "../lib/supabase";
 import type {
-  Profile, Product, Category, Pack, Supplier, Customer, Sale, CashSession,
+  Profile, Product, Category, Pack, Supplier, Sale, CashSession,
   CashMovement, StockMovement, Purchase, Expense, Order, AuditEntry,
   DashboardStats, ReportData, PeriodKey, EntrepriseSettings, CaisseSettings,
   Establishment, SelectionEtablissement,
@@ -131,20 +131,13 @@ export const modifierPack = (
   corps: Partial<Pack> & { items?: { productId: number; quantite: number }[] }
 ) => patch<Pack>(`/packs/${id}`, corps);
 
-// --- Fournisseurs et clients (communs aux établissements) ------------------
+// --- Fournisseurs (communs aux établissements) -----------------------------
 
 export const getFournisseurs = () => get<Supplier[]>("/suppliers");
 export const creerFournisseur = (corps: Partial<Supplier>) => post<Supplier>("/suppliers", corps);
 export const modifierFournisseur = (id: number, corps: Partial<Supplier>) =>
   patch<Supplier>(`/suppliers/${id}`, corps);
 
-export const getClients = (recherche = "") =>
-  get<Customer[]>(`/customers${recherche ? `?q=${encodeURIComponent(recherche)}` : ""}`);
-export const getClient = (id: number, etab?: SelectionEtablissement) =>
-  get<Customer & { ventes: Sale[]; commandes: Order[] }>(`/customers/${id}${requete(etab)}`);
-export const creerClient = (corps: Partial<Customer>) => post<Customer>("/customers", corps);
-export const modifierClient = (id: number, corps: Partial<Customer>) =>
-  patch<Customer>(`/customers/${id}`, corps);
 
 // --- Caisse (§5.3) ---------------------------------------------------------
 
@@ -177,7 +170,6 @@ export const enregistrerVente = (corps: {
   paymentMethod: string;
   numeroTransaction?: string;
   remise?: number;
-  customerId?: number | null;
 }) => post<{ id: number; numeroRecu: string; total: number }>("/sales", corps);
 export const annulerVente = (id: number, motif: string) =>
   post<Sale>(`/sales/${id}/cancel`, { motif });

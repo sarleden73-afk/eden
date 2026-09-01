@@ -10,7 +10,6 @@ import Vente from "./pages/Vente";
 import Caisse from "./pages/Caisse";
 import Ventes from "./pages/Ventes";
 import Commandes from "./pages/Commandes";
-import Clients from "./pages/Clients";
 import Catalogue from "./pages/Catalogue";
 import Stocks from "./pages/Stocks";
 import Achats from "./pages/Achats";
@@ -71,7 +70,6 @@ export default function App() {
             <Route path="/caisse"         element={<Protege roles={TOUS}><Caisse /></Protege>} />
             <Route path="/ventes"         element={<Protege roles={TOUS}><Ventes /></Protege>} />
             <Route path="/commandes"      element={<Protege roles={TOUS}><Commandes /></Protege>} />
-            <Route path="/clients"        element={<Protege roles={TOUS}><Clients /></Protege>} />
             <Route path="/catalogue"      element={<Protege roles={TOUS}><Catalogue /></Protege>} />
             <Route path="/stocks"         element={<Protege roles={TOUS}><Stocks /></Protege>} />
 

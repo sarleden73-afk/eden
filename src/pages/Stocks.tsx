@@ -9,7 +9,7 @@ import {
 } from "../components/ui";
 import { getProduits, getMouvementsStock, ajusterStock } from "../services/db";
 import { fcfa, quantite as fmtQuantite, dateHeure } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import type { Product, StockMovement } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -69,7 +69,7 @@ export default function Stocks() {
   }, [produits, recherche, filtreAlerte]);
 
   const exporter = () =>
-    exporterCSV(
+    exporterListePDF(
       "stocks-eden",
       ["Article", "Catégorie", "Pôle", "Quantité", "Unité", "Seuil d'alerte", "Prix d'achat", "Valeur du stock", "État"],
       affiches.map((p) => [
@@ -83,7 +83,7 @@ export default function Stocks() {
     <Layout>
       <PageHeader titre="Stocks" sousTitre={`${libelle} — état, alertes, inventaire et mouvements`}>
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!affiches.length}>
-          Excel
+          PDF
         </Bouton>
       </PageHeader>
 

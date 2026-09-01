@@ -12,7 +12,7 @@ import {
   getFournisseurs, creerFournisseur, modifierFournisseur, getProduits,
 } from "../services/db";
 import { fcfa, dateCourte, quantite as fmtQuantite, aujourdhui } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import {
@@ -62,7 +62,7 @@ export default function Achats() {
   const restant = achats.reduce((s, a) => s + a.montantRestant, 0);
 
   const exporter = () =>
-    exporterCSV(
+    exporterListePDF(
       "achats-eden",
       ["N°", "Date", "Fournisseur", "Établissement", "Montant total", "Payé", "Restant dû", "Paiement", "Par", "Justificatif"],
       achats.map((a) => [
@@ -82,7 +82,7 @@ export default function Achats() {
               onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
             />
             <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!achats.length}>
-              Excel
+              PDF
             </Bouton>
             <Bouton icone={Plus} onClick={() => setNouvelAchat(true)} disabled={pourEcriture === null} title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}>Nouvel achat</Bouton>
           </>

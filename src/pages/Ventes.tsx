@@ -7,7 +7,7 @@ import {
 } from "../components/ui";
 import { getVentes, getVente, annulerVente } from "../services/db";
 import { fcfa, dateHeure, quantite as fmtQuantite, aujourdhui } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import {
   PAYMENT_LABELS,
   type Sale, type PeriodKey,
@@ -48,7 +48,7 @@ export default function Ventes() {
   const total = validees.reduce((s, v) => s + v.total, 0);
 
   const exporter = () => {
-    exporterCSV(
+    exporterListePDF(
       "ventes-eden",
       ["N° reçu", "Date et heure", "Établissement", "Vendeur", "Paiement", "Sous-total", "Remise", "Total", "Statut", "Motif annulation"],
       ventes.map((v) => [
@@ -70,7 +70,7 @@ export default function Ventes() {
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!ventes.length}>
-          Excel
+          PDF
         </Bouton>
       </PageHeader>
 
@@ -142,7 +142,6 @@ export default function Ventes() {
               <Info label="Vendeur" valeur={detail.vendeurNom ?? "—"} />
               <Info label="Paiement" valeur={PAYMENT_LABELS[detail.paymentMethod]} />
               {detail.numeroTransaction && <Info label="N° transaction" valeur={detail.numeroTransaction} />}
-              {detail.customerNom && <Info label="Client" valeur={detail.customerNom} />}
             </div>
 
             <Tableau entetes={["Article", " Qté", " P.U.", " Montant"]}>

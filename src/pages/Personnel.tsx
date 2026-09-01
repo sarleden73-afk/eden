@@ -9,7 +9,7 @@ import {
   getUtilisateurs, creerUtilisateur, modifierUtilisateur, reinitialiserMotDePasse,
 } from "../services/db";
 import { dateCourte } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { ROLE_LABELS, type Profile, type UserRole, type Establishment } from "../types";
 import { getEtablissements } from "../services/db";
@@ -76,7 +76,7 @@ export default function Personnel() {
   useEffect(() => { void recharger(); }, [recharger]);
 
   const exporter = () =>
-    exporterCSV(
+    exporterListePDF(
       "personnel-eden",
       ["Nom complet", "E-mail", "Rôle", "Établissement", "Date d'entrée", "État"],
       utilisateurs.map((u) => [
@@ -90,7 +90,7 @@ export default function Personnel() {
     <Layout>
       <PageHeader titre="Personnel" sousTitre="Comptes, rôles et autorisations">
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!utilisateurs.length}>
-          Excel
+          PDF
         </Bouton>
         <Bouton icone={Plus} onClick={() => setEdite("nouveau")}>Nouveau compte</Bouton>
       </PageHeader>

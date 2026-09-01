@@ -7,7 +7,7 @@ import {
 } from "../components/ui";
 import { getCommandes, creerCommande, modifierCommande, getUtilisateurs } from "../services/db";
 import { fcfa, dateCourte, aujourdhui } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { ORDER_STATUS_LABELS, type Order, type OrderStatus, type Profile } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -55,7 +55,7 @@ export default function Commandes() {
   );
 
   const exporter = () =>
-    exporterCSV(
+    exporterListePDF(
       "commandes-eden",
       ["N°", "Client", "Téléphone", "Prestation", "Description", "Qté", "P.U.", "Total", "Acompte", "Reste", "Commandée le", "Livraison prévue", "Statut", "Technicien"],
       commandes.map((c) => [
@@ -74,7 +74,7 @@ export default function Commandes() {
           {Object.entries(ORDER_STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </Liste>
         <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!commandes.length}>
-          Excel
+          PDF
         </Bouton>
         <Bouton icone={Plus} onClick={() => setEdite("nouveau")} disabled={pourEcriture === null} title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}>Nouvelle commande</Bouton>
       </PageHeader>

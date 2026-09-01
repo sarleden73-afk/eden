@@ -1,21 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Search, Plus, Minus, Trash2, ShoppingCart, Check, Printer, X, Package,
-  UserPlus, ChevronUp, Wallet,
+  Search, Plus, Minus, Trash2, ShoppingCart, Check, Printer, Package,
+  ChevronUp, Wallet,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Erreur, Chargement, Badge, Modale, Vide,
   BandeauChoisirEtablissement,
 } from "../components/ui";
-import {
-  getProduits, getPacks, getCaisseCourante, enregistrerVente, getClients, creerClient,
-} from "../services/db";
+import { getProduits, getPacks, getCaisseCourante, enregistrerVente } from "../services/db";
 import { fcfa, nombre, dateHeure } from "../lib/format";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
-import { PAYMENT_LABELS, type Product, type Pack, type Customer, type PaymentMethod } from "../types";
+import { PAYMENT_LABELS, type Product, type Pack, type PaymentMethod } from "../types";
 
 interface LignePanier {
   cle: string;
@@ -44,6 +42,10 @@ interface TicketEmis {
  * L'établissement vient du sélecteur global : on ne vend jamais « chez tous »,
  * et le catalogue affiché est celui de l'établissement courant, ce qui rend
  * impossible d'encaisser un sandwich sur la caisse de la papeterie.
+ *
+ * Pas de rattachement client : une imprimerie et un restaurant encaissent au
+ * comptoir, sans fiche client à tenir. Les commandes infographie, elles,
+ * gardent le nom et le téléphone du donneur d'ordre — c'est là qu'il sert.
  */
 export default function Vente() {
   const naviguer = useNavigate();
@@ -61,12 +63,10 @@ export default function Vente() {
   const [remise, setRemise] = useState("");
   const [paiement, setPaiement] = useState<PaymentMethod>("especes");
   const [numeroTransaction, setNumeroTransaction] = useState("");
-  const [client, setClient] = useState<Customer | null>(null);
 
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
   const [ticket, setTicket] = useState<TicketEmis | null>(null);
-  const [modaleClient, setModaleClient] = useState(false);
   /** Feuille du panier sur mobile : l'écran est trop étroit pour deux colonnes. */
   const [panierOuvert, setPanierOuvert] = useState(false);
 
@@ -81,7 +81,6 @@ export default function Vente() {
     setChargement(true);
     setPanier([]);
     setCategorieActive("");
-    setClient(null);
 
     Promise.all([
       getProduits(pourEcriture),
@@ -167,7 +166,6 @@ export default function Vente() {
         paymentMethod: paiement,
         numeroTransaction: numeroTransaction.trim() || undefined,
         remise: remiseNum,
-        customerId: client?.id ?? null,
       });
 
       setTicket({
@@ -183,7 +181,6 @@ export default function Vente() {
       setPanier([]);
       setRemise("");
       setNumeroTransaction("");
-      setClient(null);
       setRecherche("");
       setPanierOuvert(false);
       // Le stock affiché a changé : on le recharge sans bloquer l'écran.
@@ -208,9 +205,6 @@ export default function Vente() {
       setPaiement={setPaiement}
       numeroTransaction={numeroTransaction}
       setNumeroTransaction={setNumeroTransaction}
-      client={client}
-      setClient={setClient}
-      onOuvrirClient={() => setModaleClient(true)}
       onChangerQuantite={changerQuantite}
       onRetirer={retirer}
       onVider={() => setPanier([])}
@@ -390,12 +384,6 @@ export default function Vente() {
         </>
       )}
 
-      <ModaleClient
-        ouverte={modaleClient}
-        onFermer={() => setModaleClient(false)}
-        onChoisir={(c) => { setClient(c); setModaleClient(false); }}
-      />
-
       <ModaleTicket ticket={ticket} onFermer={() => setTicket(null)} />
     </Layout>
   );
@@ -418,9 +406,6 @@ function PanierVente(props: {
   setPaiement: (v: PaymentMethod) => void;
   numeroTransaction: string;
   setNumeroTransaction: (v: string) => void;
-  client: Customer | null;
-  setClient: (c: Customer | null) => void;
-  onOuvrirClient: () => void;
   onChangerQuantite: (cle: string, delta: number) => void;
   onRetirer: (cle: string) => void;
   onVider: () => void;
@@ -431,7 +416,7 @@ function PanierVente(props: {
 }) {
   const {
     panier, sousTotal, remise, setRemise, total, paiement, setPaiement,
-    numeroTransaction, setNumeroTransaction, client, setClient, onOuvrirClient,
+    numeroTransaction, setNumeroTransaction,
     onChangerQuantite, onRetirer, onVider, onValider, envoi, bloque, couleur,
   } = props;
 
@@ -541,22 +526,6 @@ function PanierVente(props: {
             </Champ>
           )}
 
-          <button
-            onClick={onOuvrirClient}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg border border-dashed border-gray-300 hover:bg-gray-50"
-          >
-            <UserPlus className="h-4 w-4 text-gray-400 shrink-0" />
-            <span className={client ? "text-gray-900 font-medium truncate" : "text-gray-500"}>
-              {client ? client.nom : "Rattacher un client (facultatif)"}
-            </span>
-            {client && (
-              <X
-                className="h-4 w-4 text-gray-400 ml-auto shrink-0"
-                onClick={(e) => { e.stopPropagation(); setClient(null); }}
-              />
-            )}
-          </button>
-
           <div className="flex justify-between items-baseline pt-2 border-t border-gray-200">
             <span className="font-semibold text-gray-900">Total</span>
             <span className="text-2xl font-bold text-amber-600 tabulaire">{fcfa(total)}</span>
@@ -574,96 +543,6 @@ function PanierVente(props: {
         </div>
       )}
     </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sélection / création rapide d'un client (§5.9) — communs aux établissements
-// ---------------------------------------------------------------------------
-
-function ModaleClient({
-  ouverte, onFermer, onChoisir,
-}: { ouverte: boolean; onFermer: () => void; onChoisir: (c: Customer) => void }) {
-  const [recherche, setRecherche] = useState("");
-  const [clients, setClients] = useState<Customer[]>([]);
-  const [nouveauNom, setNouveauNom] = useState("");
-  const [nouveauTel, setNouveauTel] = useState("");
-  const [erreur, setErreur] = useState<string | null>(null);
-  const [envoi, setEnvoi] = useState(false);
-
-  useEffect(() => {
-    if (!ouverte) return;
-    // Recherche différée : évite une requête par frappe au clavier.
-    const timer = window.setTimeout(() => {
-      getClients(recherche).then(setClients).catch((e) => setErreur(e.message));
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [ouverte, recherche]);
-
-  const creer = async () => {
-    if (!nouveauNom.trim()) return;
-    setEnvoi(true);
-    try {
-      const c = await creerClient({ nom: nouveauNom.trim(), telephone: nouveauTel.trim() || null });
-      setNouveauNom("");
-      setNouveauTel("");
-      onChoisir(c);
-    } catch (e) {
-      setErreur(e instanceof Error ? e.message : "Création impossible.");
-    } finally {
-      setEnvoi(false);
-    }
-  };
-
-  return (
-    <Modale ouverte={ouverte} titre="Rattacher un client" onFermer={onFermer}>
-      <Erreur message={erreur} />
-
-      <Saisie
-        value={recherche}
-        onChange={(e) => setRecherche(e.target.value)}
-        placeholder="Rechercher par nom ou téléphone…"
-      />
-
-      <div className="mt-3 max-h-56 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded-lg">
-        {clients.length === 0 ? (
-          <p className="p-4 text-sm text-center text-gray-500">Aucun client trouvé.</p>
-        ) : (
-          clients.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => onChoisir(c)}
-              className="w-full px-4 py-2.5 text-left hover:bg-gray-50"
-            >
-              <p className="text-sm font-medium text-gray-900">{c.nom}</p>
-              {c.telephone && <p className="text-xs text-gray-500">{c.telephone}</p>}
-            </button>
-          ))
-        )}
-      </div>
-
-      <div className="mt-5 pt-5 border-t border-gray-200">
-        <p className="text-sm font-medium text-gray-700 mb-3">Ou créer un nouveau client</p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Champ label="Nom">
-            <Saisie value={nouveauNom} onChange={(e) => setNouveauNom(e.target.value)} placeholder="Nom du client" />
-          </Champ>
-          <Champ label="Téléphone">
-            <Saisie value={nouveauTel} onChange={(e) => setNouveauTel(e.target.value)} placeholder="06 000 00 00" />
-          </Champ>
-        </div>
-        <Bouton
-          onClick={creer}
-          chargement={envoi}
-          disabled={!nouveauNom.trim()}
-          icone={Plus}
-          className="mt-3 w-full"
-          variante="secondaire"
-        >
-          Créer et rattacher
-        </Bouton>
-      </div>
-    </Modale>
   );
 }
 

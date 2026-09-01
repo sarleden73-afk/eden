@@ -10,7 +10,7 @@ import {
   creerProduit, modifierProduit, creerPack, modifierPack, creerCategorie,
 } from "../services/db";
 import { fcfa, quantite as fmtQuantite } from "../lib/format";
-import { exporterCSV } from "../lib/export";
+import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -71,7 +71,7 @@ export default function Catalogue() {
   }, [produits, recherche]);
 
   const exporter = () =>
-    exporterCSV(
+    exporterListePDF(
       "catalogue-eden",
       ["Article", "Catégorie", "Établissement", "Type", "Prix de vente", "Prix d'achat", "Marge", "Stock", "Seuil", "Actif"],
       produitsFiltres.map((p) => [
@@ -99,7 +99,7 @@ export default function Catalogue() {
         {!modifiable && (
           <Badge ton="neutre"><Lock className="inline h-3 w-3 mr-1" />Consultation seule</Badge>
         )}
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter}>Excel</Bouton>
+        <Bouton variante="secondaire" icone={FileDown} onClick={exporter}>PDF</Bouton>
         {creationPossible && onglet === "produits" && (
           <Bouton icone={Plus} onClick={() => setProduitEdite("nouveau")}>Nouvel article</Bouton>
         )}

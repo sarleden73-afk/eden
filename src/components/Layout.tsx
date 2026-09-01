@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, ShoppingCart, Wallet, ReceiptText, Package, Boxes, Truck,
-  CreditCard, Palette, Users, UserCog, BarChart3, Calculator, History,
+  CreditCard, Palette, UserCog, BarChart3, Calculator, History,
   Settings, LogOut, Menu, X, Sprout, AlertTriangle, Building2,
   PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
@@ -33,7 +33,6 @@ const NAVIGATION: Entree[] = [
   { nom: "Caisse", href: "/caisse", icone: Wallet, roles: TOUS, groupe: "Exploitation" },
   { nom: "Ventes", href: "/ventes", icone: ReceiptText, roles: TOUS, groupe: "Exploitation" },
   { nom: "Commandes", href: "/commandes", icone: Palette, roles: TOUS, groupe: "Exploitation" },
-  { nom: "Clients", href: "/clients", icone: Users, roles: TOUS, groupe: "Exploitation" },
 
   { nom: "Catalogue", href: "/catalogue", icone: Package, roles: TOUS, groupe: "Gestion" },
   { nom: "Stocks", href: "/stocks", icone: Boxes, roles: TOUS, groupe: "Gestion" },

@@ -34,7 +34,7 @@ on conflict (nom, pole) do nothing;
 -- ---------------------------------------------------------------------------
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, unite)
-select v.nom, c.id, 'MULTI_SERVICES', 'prestation', v.prix, false, 'unité'
+select v.nom, c.id, 'MULTI_SERVICES'::pole, 'prestation'::item_kind, v.prix, false, 'unité'
 from (values
   ('Photocopie noir et blanc',   50),
   ('Photocopie couleur',        100),
@@ -58,7 +58,7 @@ on conflict (nom, pole) do nothing;
 -- depuis l'app si le client veut suivre le stock de supports vierges.
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, unite)
-select v.nom, c.id, 'MULTI_SERVICES', 'prestation', v.prix, false, 'unité'
+select v.nom, c.id, 'MULTI_SERVICES'::pole, 'prestation'::item_kind, v.prix, false, 'unité'
 from (values
   ('Tasse personnalisée',          3000),
   ('Casquette personnalisée',      2000),
@@ -80,7 +80,7 @@ on conflict (nom, pole) do nothing;
 -- d'alerte ») ; ajustable article par article depuis l'app.
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, seuil_alerte, unite)
-select v.nom, c.id, 'MULTI_SERVICES', 'produit', v.prix, true, 5, 'unité'
+select v.nom, c.id, 'MULTI_SERVICES'::pole, 'produit'::item_kind, v.prix, true, 5, 'unité'
 from (values
   ('Cahier simple 288 pages',                      450),
   ('Cahier simple 100 pages',                      300),
@@ -145,7 +145,7 @@ on conflict (nom, pole) do nothing;
 -- ---------------------------------------------------------------------------
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, seuil_alerte, unite)
-select v.nom, c.id, 'MULTI_SERVICES', 'produit', v.prix, true, 3, 'unité'
+select v.nom, c.id, 'MULTI_SERVICES'::pole, 'produit'::item_kind, v.prix, true, 3, 'unité'
 from (values
   ('Sac Mini',                                                                    12000),
   ('Sac Spiderman',                                                               12000),
@@ -166,7 +166,7 @@ on conflict (nom, pole) do nothing;
 -- ---------------------------------------------------------------------------
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, seuil_alerte, unite)
-select v.nom, c.id, 'MULTI_SERVICES', 'produit', v.prix, true, 3, 'unité'
+select v.nom, c.id, 'MULTI_SERVICES'::pole, 'produit'::item_kind, v.prix, true, 3, 'unité'
 from (values
   ('Gourde enfant avec dessins animés', 2500),
   ('Gourde enfant simple',              2000),
@@ -184,7 +184,7 @@ on conflict (nom, pole) do nothing;
 -- l'app si le client veut compter des produits finis.
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, unite)
-select v.nom, c.id, 'FOOD', 'produit', v.prix, false, 'unité'
+select v.nom, c.id, 'FOOD'::pole, 'produit'::item_kind, v.prix, false, 'unité'
 from (values
   ('Sandwich au poulet',  1000),
   ('Sandwich à la viande', 1500)
@@ -193,7 +193,7 @@ cross join (select id from categories where nom = 'Sandwichs' and pole = 'FOOD')
 on conflict (nom, pole) do nothing;
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, unite)
-select v.nom, c.id, 'FOOD', 'produit', v.prix, false, 'unité'
+select v.nom, c.id, 'FOOD'::pole, 'produit'::item_kind, v.prix, false, 'unité'
 from (values
   ('Pain à l''omelette simple',      500),
   ('Pain à l''omelette + saucisson', 600),
@@ -203,7 +203,7 @@ cross join (select id from categories where nom = 'Pains / Omelettes' and pole =
 on conflict (nom, pole) do nothing;
 
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, unite)
-select v.nom, c.id, 'FOOD', 'produit', v.prix, false, 'unité'
+select v.nom, c.id, 'FOOD'::pole, 'produit'::item_kind, v.prix, false, 'unité'
 from (values
   ('Crêpe nature',       600),
   ('Crêpe au chocolat',  800),
@@ -215,7 +215,7 @@ on conflict (nom, pole) do nothing;
 
 -- §3.4 Boissons — bouteilles achetées puis revendues : stock réellement suivi.
 insert into products (nom, category_id, pole, kind, prix_vente, gere_stock, seuil_alerte, unite)
-select v.nom, c.id, 'FOOD', 'produit', v.prix, true, 12, 'bouteille'
+select v.nom, c.id, 'FOOD'::pole, 'produit'::item_kind, v.prix, true, 12, 'bouteille'
 from (values
   ('Eau — petite bouteille',  250),
   ('Eau — autre format',      500),
@@ -233,7 +233,7 @@ on conflict (nom, pole) do nothing;
 -- article par article, et le prix reste modifiable indépendamment.
 
 insert into packs (nom, pole, prix_vente, description)
-select v.nom, 'MULTI_SERVICES', v.prix, 'Composition à définir dans Catalogue > Packs'
+select v.nom, 'MULTI_SERVICES'::pole, v.prix, 'Composition à définir dans Catalogue > Packs'
 from (values
   ('Pack maternelle', 35000),
   ('Pack primaire',   35000),

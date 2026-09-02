@@ -537,7 +537,8 @@ export interface AgentConnexion {
 export const ECRANS = [
   "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
   "catalogue", "stocks", "achats", "depenses",
-  "rapports", "comptabilite", "personnel", "etablissements", "journal", "parametres",
+  "rapports", "comptabilite", "personnel", "etablissements", "journal",
+  "corbeille", "parametres",
 ] as const;
 export type EcranCle = (typeof ECRANS)[number];
 
@@ -557,8 +558,16 @@ export const ECRAN_LABELS: Record<EcranCle, string> = {
   personnel: "Personnel",
   etablissements: "Établissements",
   journal: "Journal des opérations",
+  corbeille: "Corbeille",
   parametres: "Paramètres",
 };
+
+/** Un élément retiré, encore restaurable. */
+export interface GroupeCorbeille {
+  cle: string;
+  libelle: string;
+  elements: { id: string; nom: string; etablissement: string | null }[];
+}
 
 export interface Pointage {
   id: number;

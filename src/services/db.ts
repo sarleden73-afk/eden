@@ -4,7 +4,7 @@ import type {
   CashMovement, StockMovement, Purchase, Expense, Order, AuditEntry,
   DashboardStats, ReportData, PeriodKey, EntrepriseSettings, CaisseSettings,
   Establishment, SelectionEtablissement, AgentConnexion, LivreComptable,
-  EcranCle, Pointage, BilanPresence, PointageDuJour,
+  EcranCle, Pointage, BilanPresence, PointageDuJour, GroupeCorbeille,
 } from "../types";
 
 // ============================================================================
@@ -325,6 +325,14 @@ export const getJournal = (
   if (options.action) chemin += `&action=${encodeURIComponent(options.action)}`;
   return get<{ periode: string; entrees: AuditEntry[]; tronque: boolean }>(chemin);
 };
+
+// --- Corbeille -------------------------------------------------------------
+
+export const getCorbeille = (etab?: SelectionEtablissement) =>
+  get<{ groupes: GroupeCorbeille[]; total: number }>(`/corbeille${requete(etab)}`);
+
+export const restaurer = (domaine: string, id: string) =>
+  post<{ ok: true }>(`/corbeille/${domaine}/${encodeURIComponent(id)}/restaurer`);
 
 // --- Paramètres (§6) -------------------------------------------------------
 

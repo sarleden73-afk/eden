@@ -105,7 +105,8 @@ function requireRole(...roles: UserRole[]) {
 export const ECRANS = [
   "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
   "catalogue", "stocks", "achats", "depenses",
-  "rapports", "comptabilite", "personnel", "etablissements", "journal", "parametres",
+  "rapports", "comptabilite", "personnel", "etablissements", "journal",
+  "corbeille", "parametres",
 ] as const;
 type EcranCle = (typeof ECRANS)[number];
 
@@ -171,6 +172,7 @@ const ECRAN_PAR_CHEMIN: { motif: RegExp; ecran: EcranCle; methodes?: string[] }[
   { motif: /^\/establishments/, ecran: "etablissements", methodes: ["POST", "PATCH"] },
   { motif: /^\/settings/, ecran: "parametres", methodes: ["PUT"] },
   { motif: /^\/audit/, ecran: "journal" },
+  { motif: /^\/corbeille/, ecran: "corbeille" },
   { motif: /^\/dashboard/, ecran: "tableau-de-bord" },
 ];
 
@@ -3046,6 +3048,78 @@ export function createApiApp() {
     // Plafond volontaire : au-delà, on n'inspecte plus un journal, on le
     // dépouille — c'est le rôle des exports et du filtre de période.
     res.json({ periode: libelle, entrees: lignes.slice(0, 500), tronque: lignes.length > 500 });
+  }));
+
+  // -------------------------------------------------------------------------
+  // Corbeille — ce qui a été retiré, et peut revenir
+  // -------------------------------------------------------------------------
+
+  /**
+   * Rien n'est jamais effacé de cette application : retirer un article, un
+   * pack, une catégorie, un fournisseur, un établissement ou un compte les
+   * désactive. Ils cessent d'apparaître partout, mais l'historique qui les
+   * mentionne — une vente d'il y a six mois, un achat réglé — reste lisible.
+   *
+   * Ventes, caisses et écritures n'y figurent pas : elles ne se suppriment
+   * pas du tout. Une vente s'annule, avec un motif, et la trace en reste.
+   */
+  // `select` est écrit en toutes lettres pour chaque domaine : le typage de
+  // supabase-js ne sait pas analyser une liste de colonnes construite à la
+  // volée, et le faire lui perdrait la vérification des noms de colonnes —
+  // exactement ce qu'on veut garder ici.
+  const DOMAINES_CORBEILLE = [
+    { cle: "products", table: "products", libelle: "Articles", champNom: "nom", select: "id, nom, establishment_id" },
+    { cle: "packs", table: "packs", libelle: "Packs", champNom: "nom", select: "id, nom, establishment_id" },
+    { cle: "categories", table: "categories", libelle: "Catégories", champNom: "nom", select: "id, nom, establishment_id" },
+    { cle: "suppliers", table: "suppliers", libelle: "Fournisseurs", champNom: "nom", select: "id, nom" },
+    { cle: "establishments", table: "establishments", libelle: "Établissements", champNom: "nom", select: "id, nom" },
+    { cle: "profiles", table: "profiles", libelle: "Comptes", champNom: "full_name", select: "id, full_name, establishment_id" },
+  ] as const;
+
+  api.get("/corbeille", requireRole(...ADMIN), route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    const etabs = await nomsEtablissements();
+
+    const groupes = await Promise.all(DOMAINES_CORBEILLE.map(async (d) => {
+      const parEtablissement = d.select.includes("establishment_id");
+      let q = supabase.from(d.table).select(d.select)
+        .eq("actif", false).order(d.champNom);
+      if (parEtablissement) q = filtrerEtablissement(q, portee.id);
+
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+
+      return {
+        cle: d.cle,
+        libelle: d.libelle,
+        elements: ((data ?? []) as unknown as Record<string, unknown>[]).map((x) => ({
+          id: String(x.id),
+          nom: String(x[d.champNom] ?? "—"),
+          etablissement: parEtablissement
+            ? etabs.get(x.establishment_id as number)?.nom ?? null
+            : null,
+        })),
+      };
+    }));
+
+    res.json({ groupes, total: groupes.reduce((s, g) => s + g.elements.length, 0) });
+  }));
+
+  api.post("/corbeille/:domaine/:id/restaurer", requireRole(...ADMIN), route(async (req, res) => {
+    const d = DOMAINES_CORBEILLE.find((x) => x.cle === req.params.domaine);
+    if (!d) return res.status(400).json({ error: "Domaine inconnu." });
+
+    // Un identifiant venu de l'URL ne choisit pas la table : celle-ci est
+    // prise dans la liste fermée ci-dessus, jamais construite depuis la requête.
+    const { data, error } = await supabase.from(d.table)
+      .update({ actif: true }).eq("id", req.params.id).select().single();
+    if (error) throw new Error(error.message);
+    if (!data) return res.status(404).json({ error: "Élément introuvable." });
+
+    journaliser(req.profil!, "restauration", d.table, req.params.id, { apres: data });
+    res.json({ ok: true });
   }));
 
   // -------------------------------------------------------------------------

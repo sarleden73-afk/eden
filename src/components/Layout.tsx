@@ -4,7 +4,7 @@ import {
   LayoutDashboard, ShoppingCart, Wallet, ReceiptText, Package, Boxes, Truck,
   CreditCard, Palette, UserCog, BarChart3, Calculator, History,
   Settings, LogOut, Menu, X, Sprout, AlertTriangle, Building2,
-  PanelLeftClose, PanelLeftOpen, ScanFace, CalendarCheck,
+  PanelLeftClose, PanelLeftOpen, ScanFace, CalendarCheck, Trash2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
@@ -47,6 +47,7 @@ const NAVIGATION: Entree[] = [
   { nom: "Présence", href: "/presence", icone: CalendarCheck, ecran: "personnel", groupe: "Direction" },
   { nom: "Établissements", href: "/etablissements", icone: Building2, ecran: "etablissements", groupe: "Direction" },
   { nom: "Journal", href: "/journal", icone: History, ecran: "journal", groupe: "Direction" },
+  { nom: "Corbeille", href: "/corbeille", icone: Trash2, ecran: "corbeille", groupe: "Direction" },
   { nom: "Paramètres", href: "/parametres", icone: Settings, ecran: "parametres", groupe: "Direction" },
 ];
 

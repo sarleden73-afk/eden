@@ -23,6 +23,7 @@ import Journal from "./pages/Journal";
 import Parametres from "./pages/Parametres";
 import Pointage from "./pages/Pointage";
 import Presence from "./pages/Presence";
+import Corbeille from "./pages/Corbeille";
 
 function Ecran() {
   return (
@@ -105,6 +106,7 @@ export default function App() {
             <Route path="/personnel"      element={<Protege ecran="personnel"><Personnel /></Protege>} />
             <Route path="/presence"       element={<Protege ecran="personnel"><Presence /></Protege>} />
             <Route path="/etablissements" element={<Protege ecran="etablissements"><Etablissements /></Protege>} />
+            <Route path="/corbeille"      element={<Protege ecran="corbeille"><Corbeille /></Protege>} />
             <Route path="/parametres"     element={<Protege ecran="parametres"><Parametres /></Protege>} />
 
             <Route path="/" element={<Accueil />} />

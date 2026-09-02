@@ -52,6 +52,8 @@ interface Profil {
   role: UserRole;
   /** null = accès à tous les établissements. */
   establishmentId: number | null;
+  /** Écrans autorisés ; null = ceux du rôle. */
+  permissions: string[] | null;
   actif: boolean;
 }
 
@@ -62,7 +64,7 @@ interface Req extends AuthRequest {
 async function loadProfile(req: Req, res: Response, next: express.NextFunction) {
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, role, establishment_id, actif")
+    .select("id, full_name, role, establishment_id, permissions, actif")
     .eq("id", req.user!.uid)
     .maybeSingle();
 
@@ -79,6 +81,7 @@ async function loadProfile(req: Req, res: Response, next: express.NextFunction) 
     fullName: data.full_name,
     role: data.role as UserRole,
     establishmentId: data.establishment_id as number | null,
+    permissions: (data.permissions as string[] | null) ?? null,
     actif: data.actif,
   };
   next();
@@ -91,6 +94,88 @@ function requireRole(...roles: UserRole[]) {
     }
     next();
   };
+}
+
+// --- Droits par écran -------------------------------------------------------
+// Le rôle donne une base, que l'administrateur affine personne par personne.
+// Caissier et technicien partagent exactement les mêmes accès : dans les faits
+// ils se remplacent l'un l'autre à la caisse, et leur donner des droits
+// différents empêcherait cette souplesse.
+
+export const ECRANS = [
+  "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
+  "catalogue", "stocks", "achats", "depenses",
+  "rapports", "comptabilite", "personnel", "etablissements", "journal", "parametres",
+] as const;
+type EcranCle = (typeof ECRANS)[number];
+
+const ECRANS_TERRAIN: EcranCle[] = [
+  "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
+  "catalogue", "stocks", "depenses",
+];
+
+const ECRANS_PAR_ROLE: Record<UserRole, EcranCle[]> = {
+  admin: [...ECRANS],
+  responsable: [
+    "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
+    "catalogue", "stocks", "achats", "depenses", "rapports", "journal", "personnel",
+  ],
+  caissier: ECRANS_TERRAIN,
+  technicien: ECRANS_TERRAIN,
+};
+
+/** Écrans réellement accessibles : liste personnalisée, sinon base du rôle. */
+function ecransDe(profil: Profil): EcranCle[] {
+  const base = ECRANS_PAR_ROLE[profil.role];
+  if (!Array.isArray(profil.permissions) || profil.permissions.length === 0) return base;
+
+  // Une liste personnalisée peut restreindre, jamais promouvoir : on
+  // l'intersecte toujours avec ce que le rôle permet.
+  const autorises = new Set(base);
+  return (profil.permissions as EcranCle[]).filter((e) => autorises.has(e));
+}
+
+/**
+ * Correspondance chemin → écran, appliquée à toutes les routes d'un coup.
+ *
+ * Vérifier à un seul endroit vaut mieux que parsemer des gardes : une route
+ * ajoutée plus tard sans garde resterait ouverte à tous sans que personne ne
+ * s'en aperçoive. Les entrées sans `methodes` couvrent toutes les méthodes ;
+ * les lectures partagées (liste des employés pour assigner une commande, liste
+ * des établissements pour le sélecteur) restent volontairement ouvertes.
+ */
+const ECRAN_PAR_CHEMIN: { motif: RegExp; ecran: EcranCle; methodes?: string[] }[] = [
+  { motif: /^\/sales$/, ecran: "vente", methodes: ["POST"] },
+  { motif: /^\/sales/, ecran: "ventes" },
+  { motif: /^\/cash/, ecran: "caisse" },
+  { motif: /^\/(products|packs|categories)/, ecran: "catalogue" },
+  { motif: /^\/stock/, ecran: "stocks" },
+  { motif: /^\/(purchases|suppliers)/, ecran: "achats" },
+  { motif: /^\/expenses/, ecran: "depenses" },
+  { motif: /^\/orders/, ecran: "commandes" },
+  { motif: /^\/reports/, ecran: "rapports" },
+  { motif: /^\/ledger/, ecran: "comptabilite" },
+  { motif: /^\/pointages/, ecran: "personnel" },
+  { motif: /^\/pointage/, ecran: "pointage" },
+  { motif: /^\/users/, ecran: "personnel", methodes: ["POST", "PATCH", "DELETE"] },
+  { motif: /^\/establishments/, ecran: "etablissements", methodes: ["POST", "PATCH"] },
+  { motif: /^\/settings/, ecran: "parametres", methodes: ["PUT"] },
+  { motif: /^\/audit/, ecran: "journal" },
+  { motif: /^\/dashboard/, ecran: "tableau-de-bord" },
+];
+
+function verifierEcran(req: Req, res: Response, next: express.NextFunction) {
+  const regle = ECRAN_PAR_CHEMIN.find(
+    (r) => r.motif.test(req.path) && (!r.methodes || r.methodes.includes(req.method))
+  );
+  if (!regle) return next();
+
+  if (!ecransDe(req.profil!).includes(regle.ecran)) {
+    return res.status(403).json({
+      error: "Cet écran ne vous est pas accessible. Demandez l'accès à l'administrateur.",
+    });
+  }
+  next();
 }
 
 // --- Portée par établissement ----------------------------------------------
@@ -192,6 +277,90 @@ const reinitialiserTentatives = (cle: string) => tentatives.delete(cle);
 
 /** Adresse technique d'un compte à code PIN : jamais montrée à l'utilisateur. */
 const adresseTechnique = () => `agent-${randomUUID().slice(0, 12)}@staff.eden.local`;
+
+// --- Reconnaissance du visage ----------------------------------------------
+
+/**
+ * Distance entre deux empreintes : 0 = identique, 1 = sans rapport.
+ * Même calcul que côté navigateur, volontairement dupliqué plutôt qu'importé :
+ * ce module ne doit rien tirer du code d'interface.
+ */
+function distanceEmpreinte(a: number[], b: number[]): number {
+  let somme = 0;
+  for (let i = 0; i < a.length; i++) {
+    const d = a[i] - b[i];
+    somme += d * d;
+  }
+  return Math.sqrt(somme);
+}
+
+/**
+ * Seuil de décision, un cran plus strict que l'usage courant (0,6) : au
+ * pointage, reconnaître la mauvaise personne coûte plus cher que redemander
+ * une photo.
+ */
+const SEUIL_VISAGE = 0.55;
+
+interface CandidatVisage {
+  id: string;
+  full_name: string;
+  email: string;
+  establishment_id: number;
+  visage_empreinte: unknown;
+}
+
+function meilleureCorrespondance(
+  empreinte: number[],
+  candidats: CandidatVisage[]
+): CandidatVisage | null {
+  let meilleur: CandidatVisage | null = null;
+  let meilleureDistance = Number.POSITIVE_INFINITY;
+
+  for (const c of candidats) {
+    const reference = c.visage_empreinte as number[] | null;
+    if (!Array.isArray(reference) || reference.length !== empreinte.length) continue;
+
+    const d = distanceEmpreinte(empreinte, reference);
+    if (d < meilleureDistance) {
+      meilleureDistance = d;
+      meilleur = c;
+    }
+  }
+
+  return meilleureDistance <= SEUIL_VISAGE ? meilleur : null;
+}
+
+/**
+ * Enregistre l'arrivée du jour.
+ *
+ * Une seule ligne par personne et par jour : les connexions suivantes ne
+ * créent rien, l'index unique en base le garantit même si deux requêtes
+ * arrivent en même temps. Renvoie le pointage s'il vient d'être créé, null
+ * sinon — l'écran peut ainsi dire « pointage enregistré » ou rester discret.
+ */
+async function enregistrerPointage(
+  profileId: string,
+  establishmentId: number,
+  methode: "visage" | "code",
+  verifie: boolean
+): Promise<{ jour: string; arriveA: string; methode: string; verifie: boolean } | null> {
+  const jour = jourLocal(new Date());
+
+  const { data, error } = await supabase
+    .from("pointages")
+    .insert({ profile_id: profileId, establishment_id: establishmentId, jour, methode, verifie })
+    .select().single();
+
+  // Conflit d'unicité = la personne avait déjà pointé aujourd'hui.
+  if (error) return null;
+
+  return {
+    jour: data.jour,
+    arriveA: data.arrive_a,
+    methode: data.methode,
+    verifie: data.verifie,
+  };
+}
 
 // --- Traçabilité (§5.10) ----------------------------------------------------
 
@@ -411,6 +580,69 @@ export function createApiApp() {
    * transmet la session obtenue. Le PIN ne peut donc pas être essayé
    * directement contre l'API d'authentification depuis l'extérieur.
    */
+  /**
+   * Identification par le visage — première connexion de la journée.
+   *
+   * Le navigateur calcule l'empreinte et l'envoie ; c'est le serveur qui la
+   * compare aux empreintes enregistrées. Les empreintes ne sortent donc jamais
+   * de la base : les publier pour laisser le client faire la comparaison
+   * reviendrait à distribuer des données biométriques à qui ouvre la page de
+   * connexion.
+   */
+  publique.post("/visage", route(async (req, res) => {
+    const { establishmentId, empreinte } = req.body;
+
+    if (!Array.isArray(empreinte) || empreinte.length !== 128) {
+      return res.status(400).json({ error: "Image inexploitable. Réessayez." });
+    }
+
+    let q = supabase
+      .from("profiles")
+      .select("id, full_name, email, visage_empreinte, establishment_id")
+      .eq("mode_connexion", "pin").eq("actif", true).not("visage_empreinte", "is", null);
+
+    const etab = Number(establishmentId);
+    if (Number.isInteger(etab) && etab > 0) q = q.eq("establishment_id", etab);
+
+    const { data: candidats, error } = await q;
+    if (error) throw new Error(error.message);
+
+    const trouve = meilleureCorrespondance(empreinte as number[], candidats ?? []);
+    if (!trouve) {
+      return res.status(401).json({
+        error: "Visage non reconnu. Placez-vous face à la caméra, dans un bon éclairage.",
+      });
+    }
+
+    // Le visage vaut identification : on ouvre la session sans code. Le mot de
+    // passe technique n'est jamais connu du navigateur, c'est le serveur qui
+    // délivre la session au nom de la personne reconnue.
+    const { data: lien, error: errLien } = await supabase.auth.admin.generateLink({
+      type: "magiclink",
+      email: trouve.email,
+    });
+    if (errLien || !lien?.properties?.hashed_token) {
+      throw new Error("Session impossible à ouvrir. Réessayez.");
+    }
+
+    const { data: session, error: errSession } = await creerClientAuth().auth.verifyOtp({
+      type: "magiclink",
+      token_hash: lien.properties.hashed_token,
+    });
+    if (errSession || !session.session) {
+      throw new Error("Session impossible à ouvrir. Réessayez.");
+    }
+
+    const pointage = await enregistrerPointage(trouve.id, trouve.establishment_id, "visage", true);
+
+    res.json({
+      accessToken: session.session.access_token,
+      refreshToken: session.session.refresh_token,
+      nom: trouve.full_name,
+      pointage,
+    });
+  }));
+
   publique.post("/pin", route(async (req, res) => {
     const { profileId, pin } = req.body;
     if (!profileId || !pin) {
@@ -421,7 +653,7 @@ export function createApiApp() {
     if (blocage) return res.status(429).json({ error: blocage });
 
     const { data: profil } = await supabase
-      .from("profiles").select("email, actif, mode_connexion")
+      .from("profiles").select("email, actif, mode_connexion, establishment_id")
       .eq("id", profileId).maybeSingle();
 
     // Message identique dans tous les cas d'échec : distinguer « compte
@@ -443,16 +675,26 @@ export function createApiApp() {
     if (error || !data.session) return echec();
 
     reinitialiserTentatives(String(profileId));
+
+    // Le code n'est le mode normal qu'à partir de la deuxième connexion de la
+    // journée. S'il n'y a pas encore de pointage, c'est que la reconnaissance
+    // du visage a échoué : la personne travaille, mais l'arrivée est marquée
+    // non vérifiée et ressortira dans le bilan de présence.
+    const pointage = await enregistrerPointage(
+      String(profileId), profil.establishment_id as number, "code", false
+    );
+
     res.json({
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token,
+      pointage,
     });
   }));
 
   app.use("/api/auth", publique);
 
   const api = express.Router();
-  api.use(requireAuth, loadProfile);
+  api.use(requireAuth, loadProfile, verifierEcran);
 
   // -------------------------------------------------------------------------
   // Profil courant
@@ -469,8 +711,10 @@ export function createApiApp() {
       etablissementNom: data.establishment_id
         ? etabs.get(data.establishment_id)?.nom ?? null
         : null,
-      /** Le frontend s'en sert pour afficher ou non le sélecteur. */
+      /** Le frontend s.en sert pour afficher ou non le sélecteur. */
       peutChangerEtablissement: data.establishment_id === null,
+      /** Écrans autorisés : la navigation s.y conforme, l.API les vérifie. */
+      ecrans: ecransDe(req.profil!),
     });
   }));
 
@@ -566,7 +810,10 @@ export function createApiApp() {
    *    son nom dans une liste.
    */
   api.post("/users", requireRole(...ADMIN), route(async (req, res) => {
-    const { email, password, pin, fullName, role, establishmentId, fonction, dateEntree } = req.body;
+    const {
+      email, password, pin, fullName, role, establishmentId, fonction, dateEntree,
+      visageEmpreinte, photoUrl,
+    } = req.body;
 
     if (!fullName || !String(fullName).trim()) {
       return res.status(400).json({ error: "Le nom complet est obligatoire." });
@@ -618,6 +865,9 @@ export function createApiApp() {
         establishment_id: rattachement,
         fonction: fonction?.trim() || null,
         date_entree: dateEntree || null,
+        visage_empreinte: Array.isArray(visageEmpreinte) && visageEmpreinte.length === 128
+          ? visageEmpreinte : null,
+        photo_url: photoUrl || null,
       })
       .select().single();
 
@@ -662,7 +912,10 @@ export function createApiApp() {
     const { data: avant } = await supabase
       .from("profiles").select("*").eq("id", req.params.id).single();
 
-    const champs = ["fullName", "role", "establishmentId", "fonction", "dateEntree", "actif"];
+    const champs = [
+      "fullName", "role", "establishmentId", "fonction", "dateEntree", "actif",
+      "permissions", "visageEmpreinte", "photoUrl",
+    ];
     const corps = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => champs.includes(k))
     ) as Record<string, unknown>;
@@ -2196,6 +2449,141 @@ export function createApiApp() {
       })),
     };
     res.json(rapport);
+  }));
+
+  // -------------------------------------------------------------------------
+  // Pointage du personnel
+  // -------------------------------------------------------------------------
+
+  /**
+   * Pointe un collègue depuis un poste déjà ouvert.
+   *
+   * Au comptoir, demander au caissier de se déconnecter pour que le technicien
+   * puisse pointer ferait perdre du temps à deux personnes. L'écran Pointage
+   * reconnaît le visage et enregistre l'arrivée sans toucher à la session en
+   * cours.
+   */
+  api.post("/pointage/visage", requireRole(...TOUS), route(async (req, res) => {
+    const { empreinte } = req.body;
+    if (!Array.isArray(empreinte) || empreinte.length !== 128) {
+      return res.status(400).json({ error: "Image inexploitable. Réessayez." });
+    }
+
+    // On ne cherche que dans l'établissement où l'on se trouve : un agent de la
+    // papeterie n'a pas à pouvoir pointer au restaurant depuis ce poste.
+    const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
+    if (cible.erreur) return res.status(400).json({ error: cible.erreur });
+
+    const { data: candidats, error } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, visage_empreinte, establishment_id")
+      .eq("actif", true).eq("establishment_id", cible.id)
+      .not("visage_empreinte", "is", null);
+    if (error) throw new Error(error.message);
+
+    const trouve = meilleureCorrespondance(empreinte as number[], candidats ?? []);
+    if (!trouve) {
+      return res.status(404).json({
+        error: "Visage non reconnu. Placez-vous face à la caméra, dans un bon éclairage.",
+      });
+    }
+
+    const pointage = await enregistrerPointage(trouve.id, cible.id, "visage", true);
+    res.json({
+      nom: trouve.full_name,
+      pointage,
+      dejaPointe: pointage === null,
+    });
+  }));
+
+  /** Pointages de la journée, pour l'écran de pointage. */
+  api.get("/pointage/jour", requireRole(...TOUS), route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    const jour = String(req.query.jour || jourLocal(new Date()));
+
+    let q = supabase.from("pointages").select("*").eq("jour", jour).order("arrive_a");
+    q = filtrerEtablissement(q, portee.id);
+
+    const [{ data, error }, noms] = await Promise.all([q, nomsEmployes()]);
+    if (error) throw new Error(error.message);
+
+    // Le personnel attendu, pour distinguer « pas encore arrivé » de « absent ».
+    let qAttendus = supabase
+      .from("profiles").select("id, full_name, fonction, establishment_id")
+      .eq("actif", true).eq("mode_connexion", "pin");
+    qAttendus = filtrerEtablissement(qAttendus, portee.id);
+    const { data: attendus } = await qAttendus;
+
+    const pointes = new Set((data ?? []).map((p) => p.profile_id));
+    res.json({
+      jour,
+      pointages: (data ?? []).map((p) => ({
+        ...toCamelCase(p),
+        nom: noms.get(p.profile_id) ?? "—",
+      })),
+      absents: (attendus ?? [])
+        .filter((a) => !pointes.has(a.id))
+        .map((a) => ({ id: a.id, fullName: a.full_name, fonction: a.fonction })),
+    });
+  }));
+
+  /** Historique et bilan de présence, pour la direction. */
+  api.get("/pointages", requireRole(...VALIDENT), route(async (req, res) => {
+    const { debutJour, finJour, libelle } = bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let q = supabase.from("pointages").select("*")
+      .gte("jour", debutJour).lte("jour", finJour)
+      .order("jour", { ascending: false }).order("arrive_a", { ascending: false });
+    q = filtrerEtablissement(q, portee.id);
+
+    const [{ data, error }, noms, etabs] = await Promise.all([
+      q, nomsEmployes(), nomsEtablissements(),
+    ]);
+    if (error) throw new Error(error.message);
+
+    const lignes = (data ?? []).map((p) => ({
+      ...toCamelCase(p),
+      nom: noms.get(p.profile_id) ?? "—",
+      etablissementNom: etabs.get(p.establishment_id)?.nom ?? "—",
+    }));
+
+    // Bilan par personne : nombre de jours travaillés, heure moyenne d'arrivée
+    // et arrivées non vérifiées. C'est ce qui permet de juger la ponctualité
+    // plutôt que de relire une liste de dates.
+    const parPersonne = new Map<string, { nom: string; jours: number; minutes: number[]; nonVerifies: number }>();
+    for (const p of data ?? []) {
+      const acc = parPersonne.get(p.profile_id) ?? {
+        nom: noms.get(p.profile_id) ?? "—", jours: 0, minutes: [], nonVerifies: 0,
+      };
+      acc.jours += 1;
+      const local = versLocal(new Date(p.arrive_a));
+      acc.minutes.push(local.getUTCHours() * 60 + local.getUTCMinutes());
+      if (!p.verifie) acc.nonVerifies += 1;
+      parPersonne.set(p.profile_id, acc);
+    }
+
+    const bilan = [...parPersonne.entries()].map(([id, v]) => {
+      const moyenne = v.minutes.reduce((s, m) => s + m, 0) / (v.minutes.length || 1);
+      const plusTot = Math.min(...v.minutes);
+      const plusTard = Math.max(...v.minutes);
+      const enMinutes = (m: number) =>
+        `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m % 60)).padStart(2, "0")}`;
+      return {
+        profileId: id,
+        nom: v.nom,
+        jours: v.jours,
+        arriveeMoyenne: enMinutes(moyenne),
+        plusTot: enMinutes(plusTot),
+        plusTard: enMinutes(plusTard),
+        nonVerifies: v.nonVerifies,
+      };
+    }).sort((a, b) => a.nom.localeCompare(b.nom));
+
+    res.json({ periode: libelle, pointages: lignes, bilan });
   }));
 
   // -------------------------------------------------------------------------

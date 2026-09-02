@@ -1,5 +1,5 @@
 import React from "react";
-import { LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers } from "lucide-react";
+import { LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { PeriodKey } from "../types";
 import { fcfa } from "../lib/format";
@@ -202,29 +202,57 @@ export function Tableau({ entetes, children }: { entetes: React.ReactNode[]; chi
   );
 }
 
+/**
+ * Indicateur chiffré.
+ *
+ * `onDetail` le rend cliquable : le chiffre affiché est un total, et pouvoir
+ * demander « de quoi est-il fait ? » évite d'avoir à le recomposer à la main
+ * depuis un autre écran. Sans `onDetail`, la carte reste un simple affichage —
+ * on n'invite pas au clic là où il n'y a rien derrière.
+ */
 export function StatCard({
-  titre, valeur, icone: Icone, detail, ton = "neutre",
+  titre, valeur, icone: Icone, detail, ton = "neutre", onDetail,
 }: {
   titre: string; valeur: string | number; icone: LucideIcon;
   detail?: string; ton?: "neutre" | "succes" | "danger";
+  onDetail?: () => void;
 }) {
   const couleurValeur = {
     neutre: "text-gray-900", succes: "text-green-700", danger: "text-red-700",
   }[ton];
 
-  return (
-    <Card className="p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-gray-500 truncate">{titre}</p>
-          <p className={cn("mt-2 text-2xl font-bold tabulaire truncate", couleurValeur)}>{valeur}</p>
-          {detail && <p className="mt-1 text-xs text-gray-500">{detail}</p>}
-        </div>
-        <div className="p-2.5 bg-indigo-50 rounded-lg shrink-0">
-          <Icone className="h-5 w-5 text-indigo-600" />
-        </div>
+  const contenu = (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-gray-500 truncate">{titre}</p>
+        <p className={cn("mt-2 text-2xl font-bold tabulaire truncate", couleurValeur)}>{valeur}</p>
+        {detail && <p className="mt-1 text-xs text-gray-500">{detail}</p>}
+        {onDetail && (
+          <p className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-indigo-600">
+            Voir le détail <ChevronRight className="h-3.5 w-3.5" />
+          </p>
+        )}
       </div>
-    </Card>
+      <div className="p-2.5 bg-indigo-50 rounded-lg shrink-0">
+        <Icone className="h-5 w-5 text-indigo-600" />
+      </div>
+    </div>
+  );
+
+  if (!onDetail) return <Card className="p-5">{contenu}</Card>;
+
+  return (
+    <button
+      type="button"
+      onClick={onDetail}
+      className={cn(
+        "text-left w-full bg-white border border-gray-200 rounded-xl shadow-sm p-5",
+        "transition-colors hover:border-indigo-300 hover:bg-indigo-50/30",
+        "focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-1"
+      )}
+    >
+      {contenu}
+    </button>
   );
 }
 

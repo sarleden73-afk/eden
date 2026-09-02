@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Calculator, FileDown, ArrowDown, Info, Plus } from "lucide-react";
+import { Calculator, FileDown, Info, Plus } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Erreur, Chargement, Tableau, SelecteurPeriode, Badge,
@@ -14,11 +14,16 @@ import {
   type ReportData, type PeriodKey, type LivreComptable, type TypeEcriture,
 } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 
 /**
  * §5.13 Comptabilité / suivi financier.
- * La cascade demandée au cahier des charges :
- *   Chiffre d'affaires → Coût des marchandises → Marge brute → Dépenses → Résultat.
+ *
+ * L'enchaînement du cahier des charges — chiffre d'affaires, coût des
+ * marchandises, marge brute, dépenses, résultat — est repris tel quel, mais
+ * présenté à l'horizontale et avec le vocabulaire du livre de caisse :
+ * ce qui entre est au débit, ce qui sort au crédit, la différence est ce qui
+ * reste. C'est ainsi que la direction le lit au comptoir.
  */
 const TONS_ECRITURE: Record<TypeEcriture, "succes" | "danger" | "alerte" | "neutre"> = {
   vente: "succes",
@@ -66,22 +71,22 @@ export default function Comptabilite() {
       perimetre: libelle,
       sousTitre: rapport.periode.libelle,
       synthese: [
-        { libelle: "Chiffre d'affaires", valeur: fcfa(t.ca) },
+        { libelle: "Débit (entrées)", valeur: fcfa(t.ca) },
         { libelle: "Marge brute", valeur: fcfa(t.margeBrute) },
-        { libelle: "Dépenses", valeur: fcfa(t.depenses) },
-        { libelle: "Résultat", valeur: fcfa(t.resultat) },
+        { libelle: "Crédit (sorties)", valeur: fcfa(t.depenses) },
+        { libelle: "Reste en caisse", valeur: fcfa(t.resultat) },
       ],
       sections: [
         {
-          titre: "Du chiffre d'affaires au résultat",
+          titre: "Du débit au reste en caisse",
           entetes: ["Poste", "Montant (FCFA)"],
           colonnesChiffrees: [1],
           lignes: [
-            ["Chiffre d'affaires", t.ca],
+            ["Débit (entrées) — ventes encaissées", t.ca],
             ["Coût des marchandises vendues", -t.coutMarchandises],
             ["Marge brute", t.margeBrute],
-            ["Dépenses de fonctionnement", -t.depenses],
-            ["Résultat estimatif", t.resultat],
+            ["Crédit (sorties) — dépenses de fonctionnement", -t.depenses],
+            ["Reste en caisse", t.resultat],
           ],
         },
         {
@@ -120,7 +125,7 @@ export default function Comptabilite() {
 
   return (
     <Layout>
-      <PageHeader titre="Comptabilité" sousTitre={`${libelle} — compte de résultat simplifié, ${rapport?.periode.libelle ?? ""}`}>
+      <PageHeader titre="Comptabilité" sousTitre={`${libelle} — débit, crédit et reste en caisse, ${rapport?.periode.libelle ?? ""}`}>
         <SelecteurPeriode
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
@@ -131,53 +136,78 @@ export default function Comptabilite() {
 
       <Erreur message={erreur} />
 
+      <Aide cle="comptabilite">
+        <p>
+          La ligne du haut se lit de gauche à droite : le <strong>débit</strong> est ce qui est
+          entré, le <strong>crédit</strong> ce qui est sorti, le <strong>reste en caisse</strong> ce
+          qu'il y a entre les deux une fois le prix d'achat des marchandises vendues déduit.
+        </p>
+        <p>
+          Le tableau « Écritures comptables », en bas, donne les lignes qui composent ces totaux :
+          c'est là qu'on justifie un chiffre. Le bouton <strong>Nouvelle dépense</strong> permet de
+          rattraper un oubli sans quitter l'écran.
+        </p>
+      </Aide>
+
       {chargement && !rapport ? (
         <Chargement texte="Calcul du résultat…" />
       ) : rapport && t ? (
         <div className="space-y-6">
-          {/* --- Cascade du résultat --- */}
+          {/* --- Du débit au reste en caisse, à l'horizontale --- */}
           <Card className="p-6">
-            <div className="flex items-center gap-2 mb-6">
+            <div className="flex items-center gap-2 mb-1">
               <Calculator className="h-5 w-5 text-indigo-600" />
-              <h2 className="font-semibold text-gray-900">Du chiffre d'affaires au résultat</h2>
+              <h2 className="font-semibold text-gray-900">Du débit au reste en caisse</h2>
             </div>
+            <p className="text-sm text-gray-500 mb-5">
+              Se lit de gauche à droite : ce qui est entré, ce qu'il a fallu payer, ce qui reste.
+            </p>
 
-            <div className="space-y-2 max-w-2xl">
-              <LigneCascade
-                libelle="Chiffre d'affaires"
+            {/* Cinq étapes alignées, séparées par leur opération. Sur petit
+                écran la ligne se replie en deux colonnes plutôt que de forcer
+                un défilement latéral. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr_auto_1fr] gap-3 xl:gap-2 items-stretch">
+              <CarteFlux
+                libelle="Débit (entrées)"
                 detail={`${nombre(t.nbVentes)} vente(s) — panier moyen ${fcfa(t.panierMoyen)}`}
                 montant={t.ca}
                 ton="positif"
               />
-              <Fleche />
-              <LigneCascade
-                libelle="Coût des marchandises vendues"
-                detail="Prix d'achat des articles effectivement vendus"
-                montant={-t.coutMarchandises}
+              <Operateur signe="−" />
+              <CarteFlux
+                libelle="Coût des marchandises"
+                detail="Prix d'achat de ce qui a été vendu"
+                montant={t.coutMarchandises}
                 ton="negatif"
               />
-              <Fleche />
-              <LigneCascade
+              <Operateur signe="=" />
+              <CarteFlux
                 libelle="Marge brute"
-                detail={`${tauxMarge} % du chiffre d'affaires`}
+                detail={`${tauxMarge} % du débit`}
                 montant={t.margeBrute}
                 ton="intermediaire"
               />
-              <Fleche />
-              <LigneCascade
-                libelle="Dépenses de fonctionnement"
+              <Operateur signe="−" />
+              <CarteFlux
+                libelle="Crédit (sorties)"
                 detail="Loyer, salaires, électricité, transport…"
-                montant={-t.depenses}
+                montant={t.depenses}
                 ton="negatif"
               />
-              <Fleche />
-              <LigneCascade
-                libelle="Résultat estimatif"
-                detail={`${tauxResultat} % du chiffre d'affaires`}
+              <Operateur signe="=" />
+              <CarteFlux
+                libelle="Reste en caisse"
+                detail={`${tauxResultat} % du débit`}
                 montant={t.resultat}
                 ton={t.resultat >= 0 ? "final-positif" : "final-negatif"}
               />
             </div>
+
+            <p className="mt-4 text-xs text-gray-500">
+              Le reste en caisse est une estimation : il déduit le prix d'achat des marchandises
+              vendues, qui a pu être réglé un autre jour. Le solde réellement présent dans le tiroir
+              est celui de l'écran Caisse.
+            </p>
 
             {t.coutMarchandises === 0 && t.ca > 0 && (
               <div className="flex items-start gap-2.5 mt-6 p-3 bg-amber-50 border border-amber-200 rounded-lg">
@@ -363,39 +393,52 @@ export default function Comptabilite() {
 
 // ---------------------------------------------------------------------------
 
-type TonCascade = "positif" | "negatif" | "intermediaire" | "final-positif" | "final-negatif";
+type TonFlux = "positif" | "negatif" | "intermediaire" | "final-positif" | "final-negatif";
 
-const STYLES_CASCADE: Record<TonCascade, { conteneur: string; montant: string }> = {
-  positif: { conteneur: "bg-gray-50 border-gray-200", montant: "text-gray-900" },
-  negatif: { conteneur: "bg-red-50/60 border-red-100", montant: "text-red-700" },
+const STYLES_FLUX: Record<TonFlux, { conteneur: string; montant: string }> = {
+  positif: { conteneur: "bg-green-50 border-green-200", montant: "text-green-700" },
+  negatif: { conteneur: "bg-red-50/60 border-red-200", montant: "text-red-700" },
   intermediaire: { conteneur: "bg-amber-50 border-amber-200", montant: "text-amber-700" },
-  "final-positif": { conteneur: "bg-green-50 border-green-300 border-2", montant: "text-green-700" },
-  "final-negatif": { conteneur: "bg-red-50 border-red-300 border-2", montant: "text-red-700" },
+  "final-positif": { conteneur: "bg-green-50 border-green-400 border-2", montant: "text-green-700" },
+  "final-negatif": { conteneur: "bg-red-50 border-red-400 border-2", montant: "text-red-700" },
 };
 
-function LigneCascade({
+/**
+ * Une étape du calcul.
+ *
+ * Le montant est toujours affiché en positif : le signe est porté par
+ * l'opérateur placé entre les cartes, ce qui évite l'ambiguïté d'un « − 12 000 »
+ * qu'on peut lire comme une perte alors que c'est une soustraction.
+ */
+function CarteFlux({
   libelle, detail, montant, ton,
-}: { libelle: string; detail: string; montant: number; ton: TonCascade }) {
-  const style = STYLES_CASCADE[ton];
+}: { libelle: string; detail: string; montant: number; ton: TonFlux }) {
+  const style = STYLES_FLUX[ton];
   const final = ton.startsWith("final");
 
   return (
-    <div className={cn("flex items-center justify-between gap-4 p-4 rounded-lg border", style.conteneur)}>
-      <div className="min-w-0">
-        <p className={cn("text-gray-900", final ? "text-base font-bold" : "font-medium")}>{libelle}</p>
-        <p className="text-xs text-gray-500 mt-0.5">{detail}</p>
-      </div>
-      <p className={cn("tabulaire whitespace-nowrap", final ? "text-2xl font-bold" : "text-lg font-semibold", style.montant)}>
+    <div className={cn("flex flex-col justify-between p-4 rounded-lg border min-w-0", style.conteneur)}>
+      <p className={cn("text-gray-900 leading-tight", final ? "font-bold" : "font-medium")}>{libelle}</p>
+      <p className={cn(
+        "tabulaire mt-2 break-words",
+        final ? "text-xl font-bold" : "text-lg font-semibold",
+        style.montant
+      )}>
         {montant < 0 ? "− " : ""}{fcfa(Math.abs(montant))}
       </p>
+      <p className="text-xs text-gray-500 mt-1.5 leading-snug">{detail}</p>
     </div>
   );
 }
 
-function Fleche() {
+/** Signe entre deux étapes. Horizontal sur grand écran, vertical en dessous. */
+function Operateur({ signe }: { signe: "−" | "=" }) {
   return (
-    <div className="flex justify-center py-0.5">
-      <ArrowDown className="h-4 w-4 text-gray-300" />
+    <div
+      className="hidden xl:flex items-center justify-center text-xl font-semibold text-gray-400 px-1"
+      aria-hidden
+    >
+      {signe}
     </div>
   );
 }

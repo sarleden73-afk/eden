@@ -20,6 +20,7 @@ import {
 } from "../types";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 
 /** §5.3 Gestion de la caisse : ouverture, mouvements de la journée, fermeture. */
 export default function Caisse() {
@@ -56,6 +57,18 @@ export default function Caisse() {
       <PageHeader titre="Caisse" sousTitre={`${libelle} — ouverture, mouvements et rapprochement`} />
 
       <Erreur message={erreur} />
+
+      <Aide cle="caisse">
+        <p>
+          Ouvrir une caisse déclare le fonds présent dans le tiroir en début de service. À la
+          fermeture, comptez l'argent réellement présent : l'<strong>écart</strong> entre ce compte
+          et le solde théorique est ce qui doit être expliqué.
+        </p>
+        <p>
+          Une caisse ouverte n'est pas obligatoire pour vendre, mais sans elle le rapprochement de
+          fin de journée n'a plus de point de comparaison.
+        </p>
+      </Aide>
 
       {chargement ? (
         <Chargement />

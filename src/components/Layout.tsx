@@ -4,47 +4,50 @@ import {
   LayoutDashboard, ShoppingCart, Wallet, ReceiptText, Package, Boxes, Truck,
   CreditCard, Palette, UserCog, BarChart3, Calculator, History,
   Settings, LogOut, Menu, X, Sprout, AlertTriangle, Building2,
-  PanelLeftClose, PanelLeftOpen,
+  PanelLeftClose, PanelLeftOpen, ScanFace, CalendarCheck,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import SelecteurEtablissement from "./SelecteurEtablissement";
 import { getAlertesStock, getParametres } from "../services/db";
-import { ROLE_LABELS, type UserRole } from "../types";
+import { ROLE_LABELS, type EcranCle } from "../types";
 
 interface Entree {
   nom: string;
   href: string;
   icone: typeof LayoutDashboard;
-  /** Rôles autorisés — miroir des gardes de l'API (§5.1). */
-  roles: UserRole[];
+  /**
+   * Écran commandé par cette entrée. C'est cette clé, et non le rôle, qui
+   * décide de l'affichage : la direction peut retirer un écran à quelqu'un
+   * sans avoir à changer son rôle. L'API applique la même table (src/api.ts),
+   * le menu n'est qu'un miroir.
+   */
+  ecran: EcranCle;
   groupe: string;
 }
 
-const TOUS: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
-const VALIDENT: UserRole[] = ["admin", "responsable"];
-const ADMIN: UserRole[] = ["admin"];
-
 const NAVIGATION: Entree[] = [
-  { nom: "Tableau de bord", href: "/tableau-de-bord", icone: LayoutDashboard, roles: TOUS, groupe: "Pilotage" },
+  { nom: "Tableau de bord", href: "/tableau-de-bord", icone: LayoutDashboard, ecran: "tableau-de-bord", groupe: "Pilotage" },
 
-  { nom: "Vendre", href: "/vente", icone: ShoppingCart, roles: TOUS, groupe: "Exploitation" },
-  { nom: "Caisse", href: "/caisse", icone: Wallet, roles: TOUS, groupe: "Exploitation" },
-  { nom: "Ventes", href: "/ventes", icone: ReceiptText, roles: TOUS, groupe: "Exploitation" },
-  { nom: "Commandes", href: "/commandes", icone: Palette, roles: TOUS, groupe: "Exploitation" },
+  { nom: "Vendre", href: "/vente", icone: ShoppingCart, ecran: "vente", groupe: "Exploitation" },
+  { nom: "Caisse", href: "/caisse", icone: Wallet, ecran: "caisse", groupe: "Exploitation" },
+  { nom: "Ventes", href: "/ventes", icone: ReceiptText, ecran: "ventes", groupe: "Exploitation" },
+  { nom: "Commandes", href: "/commandes", icone: Palette, ecran: "commandes", groupe: "Exploitation" },
+  { nom: "Pointage", href: "/pointage", icone: ScanFace, ecran: "pointage", groupe: "Exploitation" },
 
-  { nom: "Catalogue", href: "/catalogue", icone: Package, roles: TOUS, groupe: "Gestion" },
-  { nom: "Stocks", href: "/stocks", icone: Boxes, roles: TOUS, groupe: "Gestion" },
-  { nom: "Achats", href: "/achats", icone: Truck, roles: VALIDENT, groupe: "Gestion" },
-  { nom: "Dépenses", href: "/depenses", icone: CreditCard, roles: TOUS, groupe: "Gestion" },
+  { nom: "Catalogue", href: "/catalogue", icone: Package, ecran: "catalogue", groupe: "Gestion" },
+  { nom: "Stocks", href: "/stocks", icone: Boxes, ecran: "stocks", groupe: "Gestion" },
+  { nom: "Achats", href: "/achats", icone: Truck, ecran: "achats", groupe: "Gestion" },
+  { nom: "Dépenses", href: "/depenses", icone: CreditCard, ecran: "depenses", groupe: "Gestion" },
 
-  { nom: "Rapports", href: "/rapports", icone: BarChart3, roles: VALIDENT, groupe: "Direction" },
-  { nom: "Comptabilité", href: "/comptabilite", icone: Calculator, roles: ADMIN, groupe: "Direction" },
-  { nom: "Personnel", href: "/personnel", icone: UserCog, roles: ADMIN, groupe: "Direction" },
-  { nom: "Établissements", href: "/etablissements", icone: Building2, roles: ADMIN, groupe: "Direction" },
-  { nom: "Journal", href: "/journal", icone: History, roles: VALIDENT, groupe: "Direction" },
-  { nom: "Paramètres", href: "/parametres", icone: Settings, roles: ADMIN, groupe: "Direction" },
+  { nom: "Rapports", href: "/rapports", icone: BarChart3, ecran: "rapports", groupe: "Direction" },
+  { nom: "Comptabilité", href: "/comptabilite", icone: Calculator, ecran: "comptabilite", groupe: "Direction" },
+  { nom: "Personnel", href: "/personnel", icone: UserCog, ecran: "personnel", groupe: "Direction" },
+  { nom: "Présence", href: "/presence", icone: CalendarCheck, ecran: "personnel", groupe: "Direction" },
+  { nom: "Établissements", href: "/etablissements", icone: Building2, ecran: "etablissements", groupe: "Direction" },
+  { nom: "Journal", href: "/journal", icone: History, ecran: "journal", groupe: "Direction" },
+  { nom: "Paramètres", href: "/parametres", icone: Settings, ecran: "parametres", groupe: "Direction" },
 ];
 
 const ORDRE_GROUPES = ["Pilotage", "Exploitation", "Gestion", "Direction"];
@@ -98,7 +101,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => { setMenuOuvert(false); }, [location.pathname]);
 
   const role = profil?.role ?? "caissier";
-  const visibles = NAVIGATION.filter((e) => e.roles.includes(role));
+  // Tant que le profil n'est pas chargé, aucune entrée : afficher des liens
+  // pour les retirer une seconde plus tard donne l'impression d'un menu qui
+  // se dérobe.
+  const autorises = profil?.ecrans ?? [];
+  const visibles = NAVIGATION.filter((e) => autorises.includes(e.ecran));
 
   const barreLaterale = (
     <>

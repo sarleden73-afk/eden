@@ -14,6 +14,7 @@ import {
 } from "../types";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 
 /** §5.2 Historique des ventes — qui a vendu quoi, à quel prix, à quelle heure. */
 export default function Ventes() {
@@ -75,6 +76,14 @@ export default function Ventes() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="ventes">
+        <p>
+          Une vente ne se supprime jamais, elle s'<strong>annule</strong> — avec un motif, et la
+          trace en reste au journal. C'est ce qui permet, plus tard, d'expliquer un écart de caisse
+          plutôt que de le constater.
+        </p>
+      </Aide>
 
       <Card>
         {chargement ? (

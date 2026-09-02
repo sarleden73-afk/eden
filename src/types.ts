@@ -102,7 +102,7 @@ export const ROLES_MULTI_ETABLISSEMENTS: UserRole[] = ["admin", "responsable"];
 export interface Profile {
   id: string;
   fullName: string;
-  /** Adresse réelle pour l.encadrement, adresse technique pour le terrain. */
+  /** Adresse réelle pour l'encadrement, adresse technique pour le terrain. */
   email: string;
   role: UserRole;
   /**
@@ -110,12 +110,18 @@ export interface Profile {
    * pin   = nom choisi dans une liste + code à 6 chiffres (personnel).
    */
   modeConnexion: "email" | "pin";
-  /** Intitulé du poste tel qu.on le nomme : purement descriptif. */
+  /** Intitulé du poste tel qu'on le nomme : purement descriptif. */
   fonction: string | null;
   /** null = accès à tous les établissements (propriétaire, responsable transversal). */
   establishmentId: number | null;
   etablissementNom?: string | null;
   dateEntree: string | null;
+  /** Écrans autorisés ; null = ceux du rôle. */
+  permissions: string[] | null;
+  /** Photo d'inscription, réservée à l'administrateur. */
+  photoUrl: string | null;
+  /** Présence d'une empreinte : le vecteur lui-même ne remonte pas au client. */
+  visageEnregistre?: boolean;
   actif: boolean;
   createdAt: string;
 }
@@ -345,8 +351,18 @@ export interface Order {
 }
 
 /** Le journal de traçabilité est commun à tous les établissements (§5.10). */
+/**
+ * Une ligne du journal.
+ *
+ * Deux origines s'y mêlent : les traces d'`audit_log`, écrites lors d'une
+ * action sensible, et les opérations courantes reconstituées à la lecture
+ * (ventes, dépenses, achats, caisse, stock, commandes, pointages). Les
+ * secondes ne sont pas recopiées dans une table de journal : les dupliquer
+ * ouvrirait la porte à un journal qui contredit les données qu'il décrit.
+ */
 export interface AuditEntry {
-  id: number;
+  /** Clé unique tous domaines confondus, ex. « audit-12 », « vente-40 ». */
+  cle: string;
   userId: string | null;
   userNom: string | null;
   action: string;
@@ -356,6 +372,12 @@ export interface AuditEntry {
   avant: unknown;
   apres: unknown;
   createdAt: string;
+  /** Établissement concerné, quand l'opération en vise un. */
+  etablissement?: string | null;
+  /** Montant en jeu, pour les opérations qui en portent un. */
+  montant?: number | null;
+  /** true pour une trace d'audit, false pour une opération courante. */
+  trace?: boolean;
 }
 
 export interface EntrepriseSettings {
@@ -505,4 +527,66 @@ export interface AgentConnexion {
   fonction: string | null;
   role: UserRole;
   establishmentId: number | null;
+  /** Un visage est enregistré : l'écran peut proposer la caméra. */
+  visageEnregistre: boolean;
+}
+
+// --- Pointage et droits ----------------------------------------------------
+
+/** Clés des écrans, miroir de la table de contrôle du serveur (src/api.ts). */
+export const ECRANS = [
+  "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
+  "catalogue", "stocks", "achats", "depenses",
+  "rapports", "comptabilite", "personnel", "etablissements", "journal", "parametres",
+] as const;
+export type EcranCle = (typeof ECRANS)[number];
+
+export const ECRAN_LABELS: Record<EcranCle, string> = {
+  "tableau-de-bord": "Tableau de bord",
+  vente: "Vendre",
+  caisse: "Caisse",
+  ventes: "Historique des ventes",
+  commandes: "Commandes",
+  pointage: "Pointage",
+  catalogue: "Catalogue",
+  stocks: "Stocks",
+  achats: "Achats et fournisseurs",
+  depenses: "Dépenses",
+  rapports: "Rapports",
+  comptabilite: "Comptabilité",
+  personnel: "Personnel",
+  etablissements: "Établissements",
+  journal: "Journal des opérations",
+  parametres: "Paramètres",
+};
+
+export interface Pointage {
+  id: number;
+  profileId: string;
+  nom?: string;
+  establishmentId: number;
+  etablissementNom?: string;
+  jour: string;
+  arriveA: string;
+  methode: "visage" | "code";
+  /** false = la reconnaissance a échoué, l'entrée s'est faite par code. */
+  verifie: boolean;
+  note: string | null;
+}
+
+/** Résumé d'assiduité sur une période, par personne. */
+export interface BilanPresence {
+  profileId: string;
+  nom: string;
+  jours: number;
+  arriveeMoyenne: string;
+  plusTot: string;
+  plusTard: string;
+  nonVerifies: number;
+}
+
+export interface PointageDuJour {
+  jour: string;
+  pointages: Pointage[];
+  absents: { id: string; fullName: string; fonction: string | null }[];
 }

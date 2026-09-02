@@ -4,6 +4,7 @@ import type {
   CashMovement, StockMovement, Purchase, Expense, Order, AuditEntry,
   DashboardStats, ReportData, PeriodKey, EntrepriseSettings, CaisseSettings,
   Establishment, SelectionEtablissement, AgentConnexion, LivreComptable,
+  EcranCle, Pointage, BilanPresence, PointageDuJour,
 } from "../types";
 
 // ============================================================================
@@ -112,15 +113,34 @@ export const getPersonnelConnexion = (establishmentId?: number) =>
     `/personnel${establishmentId ? `?establishmentId=${establishmentId}` : ""}`
   );
 
+export interface ResultatConnexion {
+  accessToken: string;
+  refreshToken: string;
+  nom?: string;
+  /** Renseigné seulement si l'arrivée vient d'être enregistrée. */
+  pointage?: { jour: string; arriveA: string; methode: string; verifie: boolean } | null;
+}
+
 export const connexionParCode = (profileId: string, pin: string) =>
-  appelPublic<{ accessToken: string; refreshToken: string }>("/pin", {
+  appelPublic<ResultatConnexion>("/pin", {
     method: "POST",
     body: JSON.stringify({ profileId, pin }),
   });
 
+/** Identification par le visage : l'empreinte est comparée côté serveur. */
+export const connexionParVisage = (establishmentId: number | null, empreinte: number[]) =>
+  appelPublic<ResultatConnexion>("/visage", {
+    method: "POST",
+    body: JSON.stringify({ establishmentId, empreinte }),
+  });
+
 // --- Profil et utilisateurs (§5.1) -----------------------------------------
 
-export type ProfilCourant = Profile & { peutChangerEtablissement: boolean };
+export type ProfilCourant = Profile & {
+  peutChangerEtablissement: boolean;
+  /** Écrans autorisés, calculés par le serveur à partir du rôle et des droits. */
+  ecrans: EcranCle[];
+};
 
 export const getMonProfil = () => get<ProfilCourant>("/me");
 export const getUtilisateurs = () => get<Profile[]>("/users");
@@ -293,12 +313,17 @@ export const getLivreComptable = (
   options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
 ) => get<LivreComptable>(`/ledger${parametresPeriode(periode, options)}`);
 
-export const getJournal = (filtres: { entite?: string; action?: string } = {}) => {
-  const p = new URLSearchParams();
-  if (filtres.entite) p.set("entite", filtres.entite);
-  if (filtres.action) p.set("action", filtres.action);
-  const q = p.toString();
-  return get<AuditEntry[]>(`/audit${q ? `?${q}` : ""}`);
+export const getJournal = (
+  periode: PeriodKey,
+  options: {
+    debut?: string; fin?: string; etablissement?: SelectionEtablissement;
+    entite?: string; action?: string;
+  } = {}
+) => {
+  let chemin = `/audit${parametresPeriode(periode, options)}`;
+  if (options.entite) chemin += `&entite=${encodeURIComponent(options.entite)}`;
+  if (options.action) chemin += `&action=${encodeURIComponent(options.action)}`;
+  return get<{ periode: string; entrees: AuditEntry[]; tronque: boolean }>(chemin);
 };
 
 // --- Paramètres (§6) -------------------------------------------------------
@@ -307,3 +332,21 @@ export const getParametres = () =>
   get<{ entreprise?: EntrepriseSettings; caisse?: CaisseSettings }>("/settings");
 export const enregistrerParametres = (cle: string, valeur: unknown) =>
   put<unknown>(`/settings/${cle}`, valeur);
+
+// --- Pointage --------------------------------------------------------------
+
+/** Pointe un collègue depuis un poste déjà ouvert, sans changer de session. */
+export const pointerParVisage = (establishmentId: number, empreinte: number[]) =>
+  post<{ nom: string; pointage: Pointage | null; dejaPointe: boolean }>(
+    "/pointage/visage", { establishmentId, empreinte }
+  );
+
+export const getPointagesDuJour = (etab?: SelectionEtablissement, jour?: string) =>
+  get<PointageDuJour>(`/pointage/jour${requete(etab, jour ? { jour } : {})}`);
+
+export const getPointages = (
+  periode: PeriodKey,
+  options: { debut?: string; fin?: string; etablissement?: SelectionEtablissement } = {}
+) => get<{ periode: string; pointages: Pointage[]; bilan: BilanPresence[] }>(
+  `/pointages${parametresPeriode(periode, options)}`
+);

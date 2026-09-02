@@ -17,6 +17,7 @@ import { fcfa, nombre, dateCourte, aujourdhui } from "../lib/format";
 import { exporterPDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 import {
   EXPENSE_LABELS, PAYMENT_LABELS, ROLE_LABELS,
   type ReportData, type PeriodKey,
@@ -129,6 +130,14 @@ export default function Rapports() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="rapports">
+        <p>
+          Chaque tableau suit la période choisie en haut à droite et l'établissement sélectionné dans
+          le menu. Le bouton <strong>PDF</strong> exporte exactement ce qui est affiché — ni plus, ni
+          moins — pour être imprimé ou transmis.
+        </p>
+      </Aide>
 
       {chargement && !rapport ? (
         <Chargement texte="Calcul du rapport…" />

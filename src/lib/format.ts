@@ -19,23 +19,36 @@ export function quantite(valeur: number | null | undefined): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
 }
 
+/**
+ * Fuseau de l'entreprise, fixé et non déduit du navigateur.
+ *
+ * Le serveur découpe les journées et les périodes en heure de Brazzaville. Si
+ * l'affichage suivait le fuseau de la machine, une consultation depuis
+ * l'étranger montrerait une vente du soir datée du lendemain, en contradiction
+ * avec le total du jour calculé juste à côté.
+ */
+const FUSEAU = "Africa/Brazzaville";
+
 export function dateCourte(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("fr-FR", {
-    day: "2-digit", month: "2-digit", year: "numeric",
+    day: "2-digit", month: "2-digit", year: "numeric", timeZone: FUSEAU,
   });
 }
 
 export function dateHeure(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("fr-FR", {
-    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+    day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", timeZone: FUSEAU,
   });
 }
 
 export function heure(iso: string | null | undefined): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString("fr-FR", {
+    hour: "2-digit", minute: "2-digit", timeZone: FUSEAU,
+  });
 }
 
 /** Date du jour au format attendu par <input type="date">. */

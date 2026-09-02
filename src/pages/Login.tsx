@@ -1,9 +1,16 @@
 import { useEffect, useState, type FormEvent, type ButtonHTMLAttributes } from "react";
-import { Sprout, LogIn, ShieldCheck, ArrowLeft, Delete, User } from "lucide-react";
+import {
+  Sprout, LogIn, ShieldCheck, ArrowLeft, Delete, User, ScanFace, KeyRound, Check,
+} from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { Bouton, Champ, Saisie, Erreur } from "../components/ui";
-import { getEtablissementsConnexion, getPersonnelConnexion, getMarque } from "../services/db";
+import Camera from "../components/Camera";
+import {
+  getEtablissementsConnexion, getPersonnelConnexion, getMarque,
+} from "../services/db";
 import { cn } from "../lib/utils";
+import { heure } from "../lib/format";
+import { ESSAIS_AVANT_REPLI } from "../lib/visage";
 import type { AgentConnexion } from "../types";
 
 type Panneau = "personnel" | "administration";
@@ -11,27 +18,26 @@ type Panneau = "personnel" | "administration";
 /**
  * §5.1 Connexion.
  *
- * Deux publics, deux écrans. Le personnel de terrain touche son nom dans une
- * liste et compose un code à six chiffres : rien à taper, rien à retenir de
- * plus, et l'application sait toujours qui encaisse. Le propriétaire et les
- * responsables passent par l'espace administrateur, avec adresse et mot de
- * passe — ils atteignent la comptabilité et les comptes, cela justifie une
- * authentification plus exigeante.
+ * Deux publics, deux écrans. Le personnel de terrain touche son nom puis se
+ * présente à la caméra : la première identification de la journée vaut
+ * pointage. Les connexions suivantes se font au code — il serait absurde de
+ * refaire une photo à chaque retour derrière le comptoir.
+ *
+ * Le propriétaire et les responsables passent par l'espace administrateur,
+ * avec adresse et mot de passe : ils atteignent la comptabilité et les comptes,
+ * cela justifie une authentification plus exigeante.
  */
 export default function Login() {
   const [panneau, setPanneau] = useState<Panneau>("personnel");
   const [marque, setMarque] = useState({ nom: "EDEN MULTI-SERVICES", logoUrl: "" });
 
-  // Le logo est facultatif : son absence, ou son échec de chargement, laisse
-  // simplement l.icône par défaut.
-  useEffect(() => {
-    getMarque().then(setMarque).catch(() => {});
-  }, []);
+  // Le logo est facultatif : son absence laisse simplement l'icône par défaut.
+  useEffect(() => { getMarque().then(setMarque).catch(() => {}); }, []);
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
-        <div className="flex flex-col items-center mb-7">
+        <div className="flex flex-col items-center mb-6">
           {marque.logoUrl ? (
             <img
               src={marque.logoUrl}
@@ -48,9 +54,7 @@ export default function Login() {
             {marque.nom}
           </h1>
           <p className="mt-1 text-sm text-gray-500 text-center">
-            {panneau === "personnel"
-              ? "Connexion du personnel"
-              : "Espace administrateur"}
+            {panneau === "personnel" ? "Connexion du personnel" : "Espace administrateur"}
           </p>
         </div>
 
@@ -65,22 +69,27 @@ export default function Login() {
 }
 
 // ---------------------------------------------------------------------------
-// Personnel : nom + code
+// Personnel : nom, puis visage ou code
 // ---------------------------------------------------------------------------
 
 const LONGUEUR_CODE = 6;
 
+type Etape = "choix" | "visage" | "code";
+
 function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }) {
-  const { connexionAgent } = useAuth();
+  const { connexionAgent, connexionVisage } = useAuth();
 
   const [etablissements, setEtablissements] = useState<{ id: number; nom: string; couleur: string }[]>([]);
   const [etablissementId, setEtablissementId] = useState<number | null>(null);
   const [agents, setAgents] = useState<AgentConnexion[]>([]);
-  const [agentId, setAgentId] = useState<string>("");
+  const [agentId, setAgentId] = useState("");
+  const [etape, setEtape] = useState<Etape>("choix");
+  const [echecs, setEchecs] = useState(0);
   const [code, setCode] = useState("");
   const [erreur, setErreur] = useState<string | null>(null);
   const [chargement, setChargement] = useState(true);
   const [envoi, setEnvoi] = useState(false);
+  const [pointage, setPointage] = useState<{ arriveA: string } | null>(null);
 
   useEffect(() => {
     let annule = false;
@@ -89,7 +98,6 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
         if (annule) return;
         setEtablissements(etabs);
         setAgents(personnes);
-        // Un seul établissement : inutile de faire choisir.
         if (etabs.length === 1) setEtablissementId(etabs[0].id);
         setErreur(null);
       })
@@ -101,20 +109,53 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
   const agentsVisibles = etablissementId
     ? agents.filter((a) => a.establishmentId === etablissementId)
     : agents;
-
   const agentChoisi = agents.find((a) => a.id === agentId) ?? null;
 
-  const composer = (chiffre: string) => {
+  const choisir = (a: AgentConnexion) => {
+    setAgentId(a.id);
+    setCode("");
+    setEchecs(0);
     setErreur(null);
-    setCode((c) => (c.length >= LONGUEUR_CODE ? c : c + chiffre));
+    // Sans visage enregistré, ouvrir la caméra ne mènerait nulle part.
+    setEtape(a.visageEnregistre ? "visage" : "code");
   };
 
-  const valider = async () => {
-    if (!agentId || code.length !== LONGUEUR_CODE) return;
+  const revenir = () => {
+    setAgentId("");
+    setEtape("choix");
+    setCode("");
+    setEchecs(0);
+    setErreur(null);
+  };
+
+  const parVisage = async (empreinte: number[]) => {
+    if (envoi) return;
+    setEnvoi(true);
+    try {
+      const r = await connexionVisage(etablissementId, empreinte);
+      if (r.pointage) setPointage({ arriveA: r.pointage.arriveA });
+      // La session est posée : AuthContext prend le relais et l'écran change.
+    } catch (e) {
+      const restants = echecs + 1;
+      setEchecs(restants);
+      setErreur(
+        restants >= ESSAIS_AVANT_REPLI
+          ? "Reconnaissance impossible. Utilisez votre code : votre arrivée sera enregistrée, mais signalée comme non vérifiée."
+          : e instanceof Error ? e.message : "Visage non reconnu."
+      );
+      if (restants >= ESSAIS_AVANT_REPLI) setEtape("code");
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  const parCode = async () => {
+    if (!agentId || code.length !== LONGUEUR_CODE || envoi) return;
     setEnvoi(true);
     setErreur(null);
     try {
-      await connexionAgent(agentId, code);
+      const r = await connexionAgent(agentId, code);
+      if (r.pointage) setPointage({ arriveA: r.pointage.arriveA });
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Connexion impossible.");
       setCode("");
@@ -123,16 +164,25 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
     }
   };
 
-  // Le code part tout seul dès qu'il est complet : au comptoir, un bouton de
-  // plus à viser, c'est une seconde perdue à chaque connexion.
+  // Le code part dès qu'il est complet : au comptoir, un bouton de plus à
+  // viser, c'est une seconde perdue à chaque connexion.
   useEffect(() => {
-    if (code.length === LONGUEUR_CODE && agentId && !envoi) void valider();
+    if (code.length === LONGUEUR_CODE && agentId) void parCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
   return (
     <div className="bg-white rounded-xl p-5 shadow-xl">
       <Erreur message={erreur} />
+
+      {pointage && (
+        <div className="flex items-center gap-2.5 p-3 mb-4 bg-green-50 border border-green-200 rounded-lg">
+          <Check className="h-5 w-5 text-green-600 shrink-0" />
+          <p className="text-sm text-green-900">
+            Arrivée enregistrée à <strong>{heure(pointage.arriveA)}</strong>.
+          </p>
+        </div>
+      )}
 
       {chargement ? (
         <p className="py-8 text-sm text-center text-gray-500">Chargement…</p>
@@ -146,7 +196,7 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
             L'administrateur les crée depuis l'écran Personnel.
           </p>
         </div>
-      ) : !agentId ? (
+      ) : etape === "choix" ? (
         <>
           {etablissements.length > 1 && (
             <div className="flex gap-2 mb-4">
@@ -178,18 +228,19 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
               agentsVisibles.map((a) => (
                 <button
                   key={a.id}
-                  onClick={() => { setAgentId(a.id); setCode(""); setErreur(null); }}
+                  onClick={() => choisir(a)}
                   className="w-full flex items-center gap-3 px-3 py-3 rounded-lg border border-gray-200 hover:border-indigo-400 hover:bg-gray-50 text-left transition-colors"
                 >
                   <span className="h-9 w-9 rounded-full bg-indigo-50 text-indigo-700 font-semibold flex items-center justify-center shrink-0">
                     {a.fullName[0]?.toUpperCase()}
                   </span>
-                  <span className="min-w-0">
+                  <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-gray-900 truncate">{a.fullName}</span>
                     {a.fonction && (
                       <span className="block text-xs text-gray-500 truncate">{a.fonction}</span>
                     )}
                   </span>
+                  {a.visageEnregistre && <ScanFace className="h-4 w-4 text-gray-400 shrink-0" />}
                 </button>
               ))
             )}
@@ -198,7 +249,7 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
       ) : (
         <>
           <button
-            onClick={() => { setAgentId(""); setCode(""); setErreur(null); }}
+            onClick={revenir}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 mb-4"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -210,37 +261,81 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
             {agentChoisi?.fullName}
           </p>
 
-          {/* Points de progression : on voit combien de chiffres restent sans
-              jamais afficher le code lui-même. */}
-          <div className="flex justify-center gap-2.5 mb-5">
-            {Array.from({ length: LONGUEUR_CODE }).map((_, i) => (
-              <span
-                key={i}
-                className={cn(
-                  "h-3 w-3 rounded-full border-2 transition-colors",
-                  i < code.length ? "bg-indigo-600 border-indigo-600" : "border-gray-300"
-                )}
+          {etape === "visage" ? (
+            <>
+              <Camera
+                automatique
+                onLecture={({ empreinte }) => parVisage(empreinte)}
+                message="Regardez la caméra. Votre arrivée sera enregistrée automatiquement."
               />
-            ))}
-          </div>
+              <button
+                onClick={() => { setEtape("code"); setErreur(null); }}
+                className="mt-4 w-full flex items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 hover:text-indigo-700"
+              >
+                <KeyRound className="h-4 w-4" />
+                Déjà pointé aujourd'hui — utiliser mon code
+              </button>
+            </>
+          ) : (
+            <>
+              {/* Points de progression : on voit combien de chiffres restent
+                  sans jamais afficher le code lui-même. */}
+              <div className="flex justify-center gap-2.5 mb-5">
+                {Array.from({ length: LONGUEUR_CODE }).map((_, i) => (
+                  <span
+                    key={i}
+                    className={cn(
+                      "h-3 w-3 rounded-full border-2 transition-colors",
+                      i < code.length ? "bg-indigo-600 border-indigo-600" : "border-gray-300"
+                    )}
+                  />
+                ))}
+              </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((n) => (
-              <TouchePave key={n} onClick={() => composer(n)} disabled={envoi}>{n}</TouchePave>
-            ))}
-            <div />
-            <TouchePave onClick={() => composer("0")} disabled={envoi}>0</TouchePave>
-            <TouchePave
-              onClick={() => { setErreur(null); setCode((c) => c.slice(0, -1)); }}
-              disabled={envoi || code.length === 0}
-              aria-label="Effacer le dernier chiffre"
-            >
-              <Delete className="h-5 w-5 mx-auto" />
-            </TouchePave>
-          </div>
+              <div className="grid grid-cols-3 gap-2">
+                {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((n) => (
+                  <TouchePave
+                    key={n}
+                    disabled={envoi}
+                    onClick={() => {
+                      setErreur(null);
+                      setCode((c) => (c.length >= LONGUEUR_CODE ? c : c + n));
+                    }}
+                  >
+                    {n}
+                  </TouchePave>
+                ))}
+                <div />
+                <TouchePave
+                  disabled={envoi}
+                  onClick={() => {
+                    setErreur(null);
+                    setCode((c) => (c.length >= LONGUEUR_CODE ? c : c + "0"));
+                  }}
+                >
+                  0
+                </TouchePave>
+                <TouchePave
+                  disabled={envoi || code.length === 0}
+                  onClick={() => { setErreur(null); setCode((c) => c.slice(0, -1)); }}
+                  aria-label="Effacer le dernier chiffre"
+                >
+                  <Delete className="h-5 w-5 mx-auto" />
+                </TouchePave>
+              </div>
 
-          {envoi && (
-            <p className="mt-4 text-sm text-center text-gray-500">Connexion…</p>
+              {agentChoisi?.visageEnregistre && echecs < ESSAIS_AVANT_REPLI && (
+                <button
+                  onClick={() => { setEtape("visage"); setErreur(null); }}
+                  className="mt-4 w-full flex items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 hover:text-indigo-700"
+                >
+                  <ScanFace className="h-4 w-4" />
+                  Pointer avec mon visage
+                </button>
+              )}
+
+              {envoi && <p className="mt-4 text-sm text-center text-gray-500">Connexion…</p>}
+            </>
           )}
         </>
       )}
@@ -258,14 +353,10 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
   );
 }
 
-function TouchePave({
-  onClick, disabled, children, ...props
-}: ButtonHTMLAttributes<HTMLButtonElement>) {
+function TouchePave({ children, ...props }: ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       {...props}
-      onClick={onClick}
-      disabled={disabled}
       // Cibles larges : la saisie se fait au doigt, souvent debout au comptoir.
       className="py-4 text-xl font-semibold text-gray-900 rounded-lg border border-gray-200 hover:bg-gray-50 active:bg-gray-100 disabled:opacity-40 transition-colors"
     >
@@ -304,23 +395,15 @@ function PanneauAdministration({ onRetour }: { onRetour: () => void }) {
 
       <Champ label="Adresse e-mail">
         <Saisie
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          autoComplete="username"
-          placeholder="adresse@exemple.com"
-          required
-          autoFocus
+          type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+          autoComplete="username" placeholder="adresse@exemple.com" required autoFocus
         />
       </Champ>
 
       <Champ label="Mot de passe">
         <Saisie
-          type="password"
-          value={motDePasse}
-          onChange={(e) => setMotDePasse(e.target.value)}
-          autoComplete="current-password"
-          required
+          type="password" value={motDePasse} onChange={(e) => setMotDePasse(e.target.value)}
+          autoComplete="current-password" required
         />
       </Champ>
 

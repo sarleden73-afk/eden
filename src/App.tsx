@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { EtablissementProvider } from "./contexts/EtablissementContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import type { UserRole } from "./types";
+import type { EcranCle } from "./types";
 
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
@@ -21,10 +21,8 @@ import Personnel from "./pages/Personnel";
 import Etablissements from "./pages/Etablissements";
 import Journal from "./pages/Journal";
 import Parametres from "./pages/Parametres";
-
-const TOUS: UserRole[] = ["admin", "responsable", "caissier", "technicien"];
-const VALIDENT: UserRole[] = ["admin", "responsable"];
-const ADMIN: UserRole[] = ["admin"];
+import Pointage from "./pages/Pointage";
+import Presence from "./pages/Presence";
 
 function Ecran() {
   return (
@@ -35,24 +33,44 @@ function Ecran() {
 }
 
 /**
- * Garde de route. Le filtrage par rôle ici n'est qu'un confort d'interface :
- * la règle qui fait foi est appliquée par l'API sur chaque appel (src/api.ts),
- * y compris le cloisonnement par établissement.
+ * Garde de route, par écran.
+ *
+ * Ce filtrage n'est qu'un confort d'interface : la règle qui fait foi est
+ * appliquée par l'API sur chaque appel (src/api.ts), y compris le
+ * cloisonnement par établissement. Il évite simplement d'ouvrir une page qui
+ * ne renverrait que des refus.
+ *
+ * Quelqu'un privé de tableau de bord serait renvoyé en boucle vers lui : on le
+ * dirige alors vers le premier écran qui lui reste.
  */
-function Protege({ roles, children }: { roles: UserRole[]; children: React.ReactNode }) {
+function Protege({ ecran, children }: { ecran: EcranCle; children: React.ReactNode }) {
   const { session, profil, loading } = useAuth();
 
   if (loading) return <Ecran />;
   if (!session || !profil) return <Navigate to="/connexion" replace />;
-  if (!roles.includes(profil.role)) return <Navigate to="/tableau-de-bord" replace />;
+  if (!profil.ecrans.includes(ecran)) {
+    const repli = profil.ecrans[0];
+    return <Navigate to={repli ? `/${repli}` : "/connexion"} replace />;
+  }
 
   return <>{children}</>;
+}
+
+/** Point d'entrée après connexion : le tableau de bord, ou à défaut le premier écran autorisé. */
+function Accueil() {
+  const { profil, loading } = useAuth();
+  if (loading) return <Ecran />;
+  if (!profil) return <Navigate to="/connexion" replace />;
+  const cible = profil.ecrans.includes("tableau-de-bord")
+    ? "tableau-de-bord"
+    : profil.ecrans[0];
+  return <Navigate to={cible ? `/${cible}` : "/connexion"} replace />;
 }
 
 function ConnexionOuAccueil() {
   const { session, profil, loading } = useAuth();
   if (loading) return <Ecran />;
-  if (session && profil) return <Navigate to="/tableau-de-bord" replace />;
+  if (session && profil) return <Accueil />;
   return <Login />;
 }
 
@@ -69,26 +87,28 @@ export default function App() {
           <Routes>
             <Route path="/connexion" element={<ConnexionOuAccueil />} />
 
-            <Route path="/tableau-de-bord" element={<Protege roles={TOUS}><Dashboard /></Protege>} />
-            <Route path="/vente"          element={<Protege roles={TOUS}><Vente /></Protege>} />
-            <Route path="/caisse"         element={<Protege roles={TOUS}><Caisse /></Protege>} />
-            <Route path="/ventes"         element={<Protege roles={TOUS}><Ventes /></Protege>} />
-            <Route path="/commandes"      element={<Protege roles={TOUS}><Commandes /></Protege>} />
-            <Route path="/catalogue"      element={<Protege roles={TOUS}><Catalogue /></Protege>} />
-            <Route path="/stocks"         element={<Protege roles={TOUS}><Stocks /></Protege>} />
+            <Route path="/tableau-de-bord" element={<Protege ecran="tableau-de-bord"><Dashboard /></Protege>} />
+            <Route path="/vente"          element={<Protege ecran="vente"><Vente /></Protege>} />
+            <Route path="/caisse"         element={<Protege ecran="caisse"><Caisse /></Protege>} />
+            <Route path="/ventes"         element={<Protege ecran="ventes"><Ventes /></Protege>} />
+            <Route path="/commandes"      element={<Protege ecran="commandes"><Commandes /></Protege>} />
+            <Route path="/pointage"       element={<Protege ecran="pointage"><Pointage /></Protege>} />
+            <Route path="/catalogue"      element={<Protege ecran="catalogue"><Catalogue /></Protege>} />
+            <Route path="/stocks"         element={<Protege ecran="stocks"><Stocks /></Protege>} />
 
-            <Route path="/achats"         element={<Protege roles={VALIDENT}><Achats /></Protege>} />
-            <Route path="/depenses"       element={<Protege roles={TOUS}><Depenses /></Protege>} />
-            <Route path="/rapports"       element={<Protege roles={VALIDENT}><Rapports /></Protege>} />
-            <Route path="/journal"        element={<Protege roles={VALIDENT}><Journal /></Protege>} />
+            <Route path="/achats"         element={<Protege ecran="achats"><Achats /></Protege>} />
+            <Route path="/depenses"       element={<Protege ecran="depenses"><Depenses /></Protege>} />
+            <Route path="/rapports"       element={<Protege ecran="rapports"><Rapports /></Protege>} />
+            <Route path="/journal"        element={<Protege ecran="journal"><Journal /></Protege>} />
 
-            <Route path="/comptabilite"   element={<Protege roles={ADMIN}><Comptabilite /></Protege>} />
-            <Route path="/personnel"      element={<Protege roles={ADMIN}><Personnel /></Protege>} />
-            <Route path="/etablissements" element={<Protege roles={ADMIN}><Etablissements /></Protege>} />
-            <Route path="/parametres"     element={<Protege roles={ADMIN}><Parametres /></Protege>} />
+            <Route path="/comptabilite"   element={<Protege ecran="comptabilite"><Comptabilite /></Protege>} />
+            <Route path="/personnel"      element={<Protege ecran="personnel"><Personnel /></Protege>} />
+            <Route path="/presence"       element={<Protege ecran="personnel"><Presence /></Protege>} />
+            <Route path="/etablissements" element={<Protege ecran="etablissements"><Etablissements /></Protege>} />
+            <Route path="/parametres"     element={<Protege ecran="parametres"><Parametres /></Protege>} />
 
-            <Route path="/" element={<Navigate to="/tableau-de-bord" replace />} />
-            <Route path="*" element={<Navigate to="/tableau-de-bord" replace />} />
+            <Route path="/" element={<Accueil />} />
+            <Route path="*" element={<Accueil />} />
           </Routes>
         </EtablissementProvider>
       </AuthProvider>

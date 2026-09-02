@@ -1,7 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
-import { getMonProfil, connexionParCode, type ProfilCourant } from "../services/db";
+import {
+  getMonProfil, connexionParCode, connexionParVisage,
+  type ProfilCourant, type ResultatConnexion,
+} from "../services/db";
 import type { UserRole } from "../types";
 
 interface AuthContextType {
@@ -12,7 +15,9 @@ interface AuthContextType {
   erreurProfil: string | null;
   connexion: (email: string, motDePasse: string) => Promise<void>;
   /** Connexion du personnel : identifiant de profil + code à 6 chiffres. */
-  connexionAgent: (profileId: string, pin: string) => Promise<void>;
+  connexionAgent: (profileId: string, pin: string) => Promise<ResultatConnexion>;
+  /** Connexion du personnel par le visage : vaut pointage du jour. */
+  connexionVisage: (establishmentId: number | null, empreinte: number[]) => Promise<ResultatConnexion>;
   deconnexion: () => Promise<void>;
   rafraichirProfil: () => Promise<void>;
   /** Raccourci d'autorisation, miroir des gardes de rôle de l'API. */
@@ -123,14 +128,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * technique du compte, il ne peut donc pas essayer des codes directement
    * contre l'API d'authentification.
    */
-  const connexionAgent = async (profileId: string, pin: string) => {
-    const { accessToken, refreshToken } = await connexionParCode(profileId, pin);
+  const ouvrirSession = async (r: ResultatConnexion): Promise<ResultatConnexion> => {
     const { error } = await supabase.auth.setSession({
-      access_token: accessToken,
-      refresh_token: refreshToken,
+      access_token: r.accessToken,
+      refresh_token: r.refreshToken,
     });
     if (error) throw new Error("La session n'a pas pu être ouverte. Réessayez.");
+    return r;
   };
+
+  const connexionAgent = (profileId: string, pin: string) =>
+    connexionParCode(profileId, pin).then(ouvrirSession);
+
+  const connexionVisage = (establishmentId: number | null, empreinte: number[]) =>
+    connexionParVisage(establishmentId, empreinte).then(ouvrirSession);
 
   const deconnexion = async () => { await supabase.auth.signOut(); };
 
@@ -142,7 +153,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       session, profil, loading, erreurProfil,
-      connexion, connexionAgent, deconnexion, rafraichirProfil: chargerProfil, peut,
+      connexion, connexionAgent, connexionVisage, deconnexion,
+      rafraichirProfil: chargerProfil, peut,
     }),
     [session, profil, loading, erreurProfil, chargerProfil, peut]
   );

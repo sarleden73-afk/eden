@@ -15,6 +15,7 @@ import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import type { Product, Pack, Category, Supplier } from "../types";
+import Aide from "../components/Aide";
 
 type Onglet = "produits" | "packs" | "categories";
 
@@ -112,6 +113,17 @@ export default function Catalogue() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="catalogue">
+        <p>
+          Le <strong>prix d'achat</strong> n'est pas décoratif : sans lui, la marge affichée en
+          comptabilité vaut mécaniquement le chiffre d'affaires et le résultat est surévalué. Il se
+          renseigne à la main, ou automatiquement à la réception d'un achat fournisseur.
+        </p>
+        <p>
+          Les articles appartiennent à un établissement et n'apparaissent qu'à sa caisse.
+        </p>
+      </Aide>
 
       {modifiable && pourEcriture === null && (
         <BandeauChoisirEtablissement action="créer un article, un pack ou une catégorie" />

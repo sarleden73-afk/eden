@@ -15,6 +15,7 @@ import {
 } from "../types";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 
 /** §5.7 Gestion des dépenses. */
 export default function Depenses() {
@@ -83,6 +84,14 @@ export default function Depenses() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="depenses">
+        <p>
+          Toute sortie d'argent se saisit ici, rattachée à un établissement et à un poste de charge.
+          Une dépense n'entre dans le résultat consolidé qu'une fois <strong>validée</strong> par un
+          responsable.
+        </p>
+      </Aide>
 
       <div className="grid gap-4 sm:grid-cols-3 mb-5">
         <StatCard titre="Total des dépenses" valeur={fcfa(total)} icone={CreditCard} detail={`${depenses.length} dépense(s)`} />

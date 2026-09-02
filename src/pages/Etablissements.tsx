@@ -7,6 +7,7 @@ import {
 import { getEtablissements, creerEtablissement, modifierEtablissement } from "../services/db";
 import { cn } from "../lib/utils";
 import type { Establishment } from "../types";
+import Aide from "../components/Aide";
 
 const COULEURS = [
   "#1fa066", "#d4a017", "#2563eb", "#c2410c", "#7c3aed", "#0891b2", "#be123c", "#4d7c0f",
@@ -50,6 +51,18 @@ export default function Etablissements() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="etablissements">
+        <p>
+          Chaque établissement est une entité distincte : son catalogue, ses caisses, ses ventes et
+          ses dépenses lui appartiennent. La couleur choisie ici est celle du bandeau et des
+          graphiques, elle sert à ne jamais confondre deux établissements d'un coup d'œil.
+        </p>
+        <p>
+          Désactiver un établissement le retire du sélecteur sans rien effacer : son historique reste
+          consultable dans les rapports.
+        </p>
+      </Aide>
 
       <Card>
         {chargement ? (

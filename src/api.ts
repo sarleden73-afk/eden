@@ -124,6 +124,16 @@ const ECRANS_PAR_ROLE: Record<UserRole, EcranCle[]> = {
   technicien: ECRANS_TERRAIN,
 };
 
+/**
+ * Personnel de terrain : caissier et technicien.
+ *
+ * Les deux se remplacent l'un l'autre au comptoir et ont donc exactement les
+ * mêmes droits. Ils ne consultent que leurs propres opérations, et ni marge ni
+ * résultat ne leur sont transmis — ces chiffres ne quittent pas le serveur,
+ * plutôt que d'être seulement masqués à l'écran.
+ */
+const personnelDeTerrain = (p: Profil) => p.role === "caissier" || p.role === "technicien";
+
 /** Écrans réellement accessibles : liste personnalisée, sinon base du rôle. */
 function ecransDe(profil: Profil): EcranCle[] {
   const base = ECRANS_PAR_ROLE[profil.role];
@@ -561,7 +571,8 @@ export function createApiApp() {
 
   publique.get("/personnel", route(async (req, res) => {
     let q = supabase
-      .from("profiles").select("id, full_name, fonction, role, establishment_id")
+      .from("profiles")
+      .select("id, full_name, fonction, role, establishment_id, visage_empreinte")
       .eq("mode_connexion", "pin").eq("actif", true).order("full_name");
 
     const etab = Number(req.query.establishmentId);
@@ -569,7 +580,14 @@ export function createApiApp() {
 
     const { data, error } = await q;
     if (error) throw new Error(error.message);
-    res.json(toCamelCaseArray(data ?? []));
+
+    // On expose seulement l'EXISTENCE d'une empreinte, jamais sa valeur :
+    // l'écran de connexion doit savoir s'il faut ouvrir la caméra, pas de quoi
+    // reconnaître qui que ce soit.
+    res.json((data ?? []).map(({ visage_empreinte, ...reste }) => ({
+      ...toCamelCase(reste),
+      visageEnregistre: Array.isArray(visage_empreinte) && visage_empreinte.length === 128,
+    })));
   }));
 
   /**
@@ -1429,8 +1447,8 @@ export function createApiApp() {
       .order("created_at", { ascending: false });
     q = filtrerEtablissement(q, portee.id);
 
-    // Un caissier ne consulte que ses propres ventes (§5.1).
-    if (req.profil!.role === "caissier") q = q.eq("vendeur_id", req.profil!.id);
+    // §5.1 : le personnel de terrain ne consulte que ses propres ventes.
+    if (personnelDeTerrain(req.profil!)) q = q.eq("vendeur_id", req.profil!.id);
 
     const { data, error } = await q.limit(500);
     if (error) throw new Error(error.message);
@@ -2166,7 +2184,7 @@ export function createApiApp() {
     // §5.1 : caissier et technicien n'ont qu'une consultation limitée. Leur
     // afficher marges et bénéfice reviendrait à leur ouvrir la comptabilité par
     // la fenêtre du tableau de bord.
-    const restreint = req.profil!.role === "caissier" || req.profil!.role === "technicien";
+    const restreint = personnelDeTerrain(req.profil!);
 
     let qVentes = supabase
       .from("sales").select("establishment_id, total, cout_total, created_at, statut, vendeur_id")
@@ -2723,14 +2741,311 @@ export function createApiApp() {
   // §5.10 Journal — commun à tous les établissements
   // -------------------------------------------------------------------------
 
+  /**
+   * Journal de toutes les opérations, pas seulement des actions sensibles.
+   *
+   * Deux sources s'y mêlent :
+   *   - `audit_log`, qui garde la trace des gestes de contrôle (annulation,
+   *     changement de prix, ajustement de stock…) avec l'avant et l'après ;
+   *   - les opérations courantes — ventes, dépenses, achats, ouvertures et
+   *     mouvements de caisse, mouvements de stock, commandes, pointages —
+   *     reconstituées à la lecture depuis leurs propres tables.
+   *
+   * Les secondes ne sont volontairement pas recopiées dans `audit_log` : un
+   * journal alimenté par duplication finit toujours par diverger de la réalité
+   * qu'il est censé décrire, et c'est précisément ce qu'un journal ne doit pas
+   * faire. Ici il ne peut pas mentir, il lit les mêmes lignes que les écrans.
+   */
   api.get("/audit", requireRole(...VALIDENT), route(async (req, res) => {
-    let q = supabase.from("audit_log").select("*").order("created_at", { ascending: false });
-    if (req.query.entite) q = q.eq("entite", String(req.query.entite));
-    if (req.query.action) q = q.eq("action", String(req.query.action));
+    const { debut, fin, debutJour, finJour, libelle } =
+      bornesPeriode(req.query as Record<string, unknown>);
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
 
-    const { data, error } = await q.limit(300);
-    if (error) throw new Error(error.message);
-    res.json(toCamelCaseArray(data ?? []));
+    const domaine = req.query.entite ? String(req.query.entite) : null;
+    const veut = (e: string) => !domaine || domaine === e;
+
+    // Les dépenses et les achats ne portent qu'une date, sans heure. Les placer
+    // à midi les range au bon jour quel que soit le fuseau d'affichage, au lieu
+    // de les faire basculer sur la veille.
+    const iso = (jour: string) => `${jour}T12:00:00.000Z`;
+    const dansLaPeriode = { gte: debut.toISOString(), lt: fin.toISOString() };
+
+    const [etabs, noms] = await Promise.all([nomsEtablissements(), nomsEmployes()]);
+    const nomEtab = (id: unknown) => etabs.get(id as number)?.nom ?? null;
+    const nomAuteur = (id: unknown) => noms.get(id as string) ?? "—";
+
+    const lignes: Record<string, unknown>[] = [];
+
+    // --- Traces d'audit ------------------------------------------------------
+    {
+      let q = supabase.from("audit_log").select("*")
+        .gte("created_at", dansLaPeriode.gte).lt("created_at", dansLaPeriode.lt)
+        .order("created_at", { ascending: false }).limit(500);
+      if (domaine) q = q.eq("entite", domaine);
+      if (req.query.action) q = q.eq("action", String(req.query.action));
+
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      for (const a of data ?? []) {
+        lignes.push({
+          cle: `audit-${a.id}`,
+          userId: a.user_id,
+          userNom: nomAuteur(a.user_id),
+          action: a.action,
+          entite: a.entite,
+          entiteId: a.entite_id,
+          motif: a.motif,
+          avant: a.avant,
+          apres: a.apres,
+          createdAt: a.created_at,
+          etablissement: null,
+          montant: null,
+          trace: true,
+        });
+      }
+    }
+
+    // Un filtre d'action ne s'applique qu'aux traces : les opérations courantes
+    // n'en portent pas, les inclure ferait mentir le filtre.
+    if (!req.query.action) {
+      const ajouter = (o: {
+        cle: string; date: string; action: string; entite: string; entiteId: string;
+        motif: string; auteur: unknown; etablissement: unknown; montant?: number;
+      }) => lignes.push({
+        cle: o.cle,
+        userId: (o.auteur as string) ?? null,
+        userNom: nomAuteur(o.auteur),
+        action: o.action,
+        entite: o.entite,
+        entiteId: o.entiteId,
+        motif: o.motif,
+        avant: null,
+        apres: null,
+        createdAt: o.date,
+        etablissement: nomEtab(o.etablissement),
+        montant: o.montant ?? null,
+        trace: false,
+      });
+
+      const requetes: PromiseLike<unknown>[] = [];
+
+      if (veut("sales")) {
+        let q = supabase.from("sales")
+          .select("id, numero_recu, establishment_id, total, statut, created_at, vendeur_id")
+          .gte("created_at", dansLaPeriode.gte).lt("created_at", dansLaPeriode.lt);
+        q = filtrerEtablissement(q, portee.id);
+        requetes.push(q.then(({ data }) => {
+          for (const v of data ?? []) {
+            ajouter({
+              cle: `vente-${v.id}`,
+              date: v.created_at as string,
+              action: v.statut === "annulee" ? "vente_annulee" : "vente",
+              entite: "sales",
+              entiteId: v.numero_recu as string,
+              motif: v.statut === "annulee" ? "Vente annulée" : "Vente encaissée",
+              auteur: v.vendeur_id,
+              etablissement: v.establishment_id,
+              montant: Number(v.total),
+            });
+          }
+        }));
+      }
+
+      if (veut("expenses")) {
+        let q = supabase.from("expenses")
+          .select("id, establishment_id, categorie, montant, motif, date_depense, effectue_par")
+          .gte("date_depense", debutJour).lte("date_depense", finJour);
+        q = filtrerEtablissement(q, portee.id);
+        requetes.push(q.then(({ data }) => {
+          for (const d of data ?? []) {
+            ajouter({
+              cle: `depense-${d.id}`,
+              date: iso(d.date_depense as string),
+              action: "depense",
+              entite: "expenses",
+              entiteId: `DEP-${d.id}`,
+              motif: `${EXPENSE_LABELS_SERVEUR[d.categorie as ExpenseCategory] ?? d.categorie} — ${d.motif}`,
+              auteur: d.effectue_par,
+              etablissement: d.establishment_id,
+              montant: Number(d.montant),
+            });
+          }
+        }));
+      }
+
+      if (veut("purchases")) {
+        let q = supabase.from("purchases")
+          .select("id, numero, establishment_id, montant_total, date_achat, effectue_par")
+          .gte("date_achat", debutJour).lte("date_achat", finJour);
+        q = filtrerEtablissement(q, portee.id);
+        requetes.push(q.then(({ data }) => {
+          for (const a of data ?? []) {
+            ajouter({
+              cle: `achat-${a.id}`,
+              date: iso(a.date_achat as string),
+              action: "achat",
+              entite: "purchases",
+              entiteId: a.numero as string,
+              motif: "Achat fournisseur",
+              auteur: a.effectue_par,
+              etablissement: a.establishment_id,
+              montant: Number(a.montant_total),
+            });
+          }
+        }));
+      }
+
+      if (veut("orders")) {
+        let q = supabase.from("orders")
+          .select("id, numero, establishment_id, statut, montant_total, customer_nom, type_prestation, created_at, technicien_id")
+          .gte("created_at", dansLaPeriode.gte).lt("created_at", dansLaPeriode.lt);
+        q = filtrerEtablissement(q, portee.id);
+        requetes.push(q.then(({ data }) => {
+          for (const c of data ?? []) {
+            ajouter({
+              cle: `commande-${c.id}`,
+              date: c.created_at as string,
+              action: "commande",
+              entite: "orders",
+              entiteId: c.numero as string,
+              motif: `${c.type_prestation} pour ${c.customer_nom} — ${c.statut}`,
+              // Une commande n'enregistre que le technicien affecté, pas son
+              // auteur : mieux vaut ne montrer personne qu'attribuer à tort.
+              auteur: c.technicien_id,
+              etablissement: c.establishment_id,
+              montant: Number(c.montant_total),
+            });
+          }
+        }));
+      }
+
+      if (veut("cash_sessions")) {
+        let q = supabase.from("cash_sessions")
+          .select("id, establishment_id, opened_at, closed_at, opened_by, closed_by, ecart")
+          .gte("opened_at", dansLaPeriode.gte).lt("opened_at", dansLaPeriode.lt);
+        q = filtrerEtablissement(q, portee.id);
+        requetes.push(q.then(({ data }) => {
+          for (const s of data ?? []) {
+            ajouter({
+              cle: `caisse-ouverture-${s.id}`,
+              date: s.opened_at as string,
+              action: "ouverture_caisse",
+              entite: "cash_sessions",
+              entiteId: `CAISSE-${s.id}`,
+              motif: "Ouverture de caisse",
+              auteur: s.opened_by,
+              etablissement: s.establishment_id,
+            });
+            if (s.closed_at) {
+              const ecart = Number(s.ecart ?? 0);
+              ajouter({
+                cle: `caisse-fermeture-${s.id}`,
+                date: s.closed_at as string,
+                action: "fermeture_caisse",
+                entite: "cash_sessions",
+                entiteId: `CAISSE-${s.id}`,
+                motif: ecart === 0
+                  ? "Fermeture de caisse, sans écart"
+                  : `Fermeture de caisse — écart constaté`,
+                auteur: s.closed_by,
+                etablissement: s.establishment_id,
+                montant: ecart,
+              });
+            }
+          }
+        }));
+      }
+
+      // Mouvements de caisse et de stock : on passe par les sessions et les
+      // articles de la portée, ces tables ne portant pas d'établissement.
+      let qSessions = supabase.from("cash_sessions").select("id, establishment_id");
+      qSessions = filtrerEtablissement(qSessions, portee.id);
+      const { data: sessions } = await qSessions;
+      const etabParSession = new Map((sessions ?? []).map((s) => [s.id, s.establishment_id]));
+
+      if (veut("cash_movements") && etabParSession.size) {
+        requetes.push(supabase.from("cash_movements")
+          .select("id, session_id, type, montant, motif, created_at, created_by")
+          .in("session_id", [...etabParSession.keys()])
+          .gte("created_at", dansLaPeriode.gte).lt("created_at", dansLaPeriode.lt)
+          .then(({ data }) => {
+            for (const m of data ?? []) {
+              ajouter({
+                cle: `mouvement-${m.id}`,
+                date: m.created_at as string,
+                action: "mouvement_caisse",
+                entite: "cash_movements",
+                entiteId: `MVT-${m.id}`,
+                motif: `${CASH_MOVEMENT_LABELS_SERVEUR[m.type as string] ?? "Mouvement"}${m.motif ? ` — ${m.motif}` : ""}`,
+                auteur: m.created_by,
+                etablissement: etabParSession.get(m.session_id as number),
+                montant: Math.abs(Number(m.montant)),
+              });
+            }
+          }));
+      }
+
+      if (veut("stock_movements")) {
+        let qArticles = supabase.from("products").select("id, nom, establishment_id");
+        qArticles = filtrerEtablissement(qArticles, portee.id);
+        const { data: articles } = await qArticles;
+        const article = new Map((articles ?? []).map((p) => [p.id, p]));
+
+        if (article.size) {
+          requetes.push(supabase.from("stock_movements")
+            .select("id, product_id, type, quantite, motif, created_at, created_by")
+            .in("product_id", [...article.keys()])
+            .gte("created_at", dansLaPeriode.gte).lt("created_at", dansLaPeriode.lt)
+            .then(({ data }) => {
+              for (const m of data ?? []) {
+                const p = article.get(m.product_id as number);
+                ajouter({
+                  cle: `stock-${m.id}`,
+                  date: m.created_at as string,
+                  action: "mouvement_stock",
+                  entite: "stock_movements",
+                  entiteId: `STK-${m.id}`,
+                  motif: `${p?.nom ?? "Article"} — ${m.type} de ${m.quantite}${m.motif ? ` (${m.motif})` : ""}`,
+                  auteur: m.created_by,
+                  etablissement: p?.establishment_id,
+                });
+              }
+            }));
+        }
+      }
+
+      if (veut("pointages")) {
+        let q = supabase.from("pointages")
+          .select("id, profile_id, establishment_id, arrive_a, methode, verifie")
+          .gte("jour", debutJour).lte("jour", finJour);
+        q = filtrerEtablissement(q, portee.id);
+        requetes.push(q.then(({ data }) => {
+          for (const p of data ?? []) {
+            ajouter({
+              cle: `pointage-${p.id}`,
+              date: p.arrive_a as string,
+              action: "pointage",
+              entite: "pointages",
+              entiteId: `PTG-${p.id}`,
+              motif: p.verifie
+                ? "Arrivée, visage reconnu"
+                : "Arrivée par code, sans reconnaissance",
+              auteur: p.profile_id,
+              etablissement: p.establishment_id,
+            });
+          }
+        }));
+      }
+
+      await Promise.all(requetes);
+    }
+
+    lignes.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+
+    // Plafond volontaire : au-delà, on n'inspecte plus un journal, on le
+    // dépouille — c'est le rôle des exports et du filtre de période.
+    res.json({ periode: libelle, entrees: lignes.slice(0, 500), tronque: lignes.length > 500 });
   }));
 
   // -------------------------------------------------------------------------

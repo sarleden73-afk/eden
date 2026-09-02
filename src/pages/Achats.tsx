@@ -15,6 +15,7 @@ import { fcfa, dateCourte, quantite as fmtQuantite, aujourdhui } from "../lib/fo
 import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 import {
   PAYMENT_LABELS,
   type Purchase, type Supplier, type Product, type PeriodKey,
@@ -93,6 +94,18 @@ export default function Achats() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="achats">
+        <p>
+          Un achat enregistre ce qui a été commandé au fournisseur et ce qui a été payé. Tant que le
+          <strong> restant dû</strong> n'est pas nul, l'achat pèse sur les engagements sans être
+          sorti de la caisse : c'est le montant réglé, et lui seul, qui apparaît en comptabilité.
+        </p>
+        <p>
+          Réceptionner un achat met le stock à jour et renseigne les prix d'achat, dont dépend le
+          calcul de la marge.
+        </p>
+      </Aide>
 
       {onglet === "achats" && (
         <div className="grid gap-4 sm:grid-cols-3 mb-5">

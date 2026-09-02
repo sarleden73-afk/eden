@@ -14,6 +14,7 @@ import { cn } from "../lib/utils";
 import type { Product, StockMovement } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import { useAuth } from "../contexts/AuthContext";
+import Aide from "../components/Aide";
 
 type Onglet = "etat" | "mouvements";
 
@@ -88,6 +89,18 @@ export default function Stocks() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="stocks">
+        <p>
+          Les quantités baissent toutes seules à chaque vente. Un <strong>ajustement</strong> ne sert
+          qu'à corriger un écart constaté physiquement — casse, perte, erreur de comptage — et il
+          est tracé dans le journal avec son motif.
+        </p>
+        <p>
+          Le <strong>seuil d'alerte</strong> déclenche le compteur du menu. Réglez-le sur ce qu'il
+          faut vendre le temps d'être réapprovisionné, pas sur zéro.
+        </p>
+      </Aide>
 
       <div className="grid gap-4 sm:grid-cols-3 mb-5">
         <StatCard

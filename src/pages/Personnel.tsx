@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  UserCog, Plus, Pencil, KeyRound, ShieldCheck, FileDown, Copy, Check, Mail, Hash,
+  UserCog, Plus, Pencil, KeyRound, ShieldCheck, FileDown, Copy, Check, Mail, Hash, ScanFace,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import {
@@ -15,7 +15,12 @@ import { dateCourte } from "../lib/format";
 import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
-import { ROLE_LABELS, type Profile, type UserRole, type Establishment } from "../types";
+import Camera from "../components/Camera";
+import Aide from "../components/Aide";
+import {
+  ROLE_LABELS, ECRAN_LABELS,
+  type Profile, type UserRole, type Establishment, type EcranCle,
+} from "../types";
 
 const TONS_ROLE: Record<UserRole, "info" | "succes" | "neutre" | "alerte"> = {
   admin: "info",
@@ -29,6 +34,28 @@ const TONS_ROLE: Record<UserRole, "info" | "succes" | "neutre" | "alerte"> = {
  * une adresse e-mail plusieurs fois par jour sur une tablette.
  */
 const ROLES_TERRAIN: UserRole[] = ["caissier", "technicien"];
+
+/**
+ * Écrans ouverts par rôle. Doit rester aligné sur ECRANS_PAR_ROLE de src/api.ts :
+ * c'est le serveur qui tranche, cette liste ne sert qu'à proposer les bonnes
+ * cases à cocher.
+ */
+const ECRANS_TERRAIN: EcranCle[] = [
+  "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
+  "catalogue", "stocks", "depenses",
+];
+
+const ECRANS_PAR_ROLE: Record<UserRole, EcranCle[]> = {
+  admin: [],
+  responsable: [
+    "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
+    "catalogue", "stocks", "achats", "depenses", "rapports", "journal", "personnel",
+  ],
+  caissier: ECRANS_TERRAIN,
+  technicien: ECRANS_TERRAIN,
+};
+
+const ecransDuRole = (r: UserRole) => ECRANS_PAR_ROLE[r];
 const estTerrain = (r: UserRole) => ROLES_TERRAIN.includes(r);
 
 /** Résumé des autorisations du §5.1, affiché pour cadrer la création de compte. */
@@ -110,6 +137,20 @@ export default function Personnel() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="personnel">
+        <p>
+          Un employé de terrain se connecte avec son <strong>visage</strong> la première fois de la
+          journée — cette reconnaissance vaut pointage — puis avec son <strong>code à six
+          chiffres</strong> pour les connexions suivantes. Prenez la photo d'inscription à la
+          création du compte, dans un bon éclairage.
+        </p>
+        <p>
+          La grille <strong>Écrans autorisés</strong> permet de retirer un écran à une personne sans
+          changer son rôle. Elle ne peut que restreindre : cocher un écran que le rôle n'autorise
+          pas ne l'ouvre pas.
+        </p>
+      </Aide>
 
       <Card>
         {chargement ? (
@@ -224,6 +265,8 @@ function ModaleUtilisateur({
     fullName: "", fonction: "", role: "caissier" as UserRole,
     establishmentId: "", dateEntree: "", actif: true,
     email: "", password: "", pin: "",
+    photo: "", empreinte: null as number[] | null,
+    permissions: null as EcranCle[] | null,
   });
   const [erreur, setErreur] = useState<string | null>(null);
   const [envoi, setEnvoi] = useState(false);
@@ -243,6 +286,9 @@ function ModaleUtilisateur({
       dateEntree: utilisateur?.dateEntree?.slice(0, 10) ?? "",
       actif: utilisateur?.actif ?? true,
       email: "", password: "", pin: "",
+      photo: utilisateur?.photoUrl ?? "",
+      empreinte: null,
+      permissions: (utilisateur?.permissions as EcranCle[] | null) ?? null,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cible]);
@@ -266,6 +312,23 @@ function ModaleUtilisateur({
     }));
   };
 
+  /**
+   * Coche ou décoche un écran.
+   *
+   * Tant que rien n'a été touché, `permissions` vaut null : la personne suit
+   * exactement son rôle. Le premier décochage matérialise la liste complète
+   * moins cet écran — sans quoi décocher une case reviendrait à tout fermer.
+   */
+  const basculerEcran = (cle: EcranCle, coche: boolean) => {
+    setForm((f) => {
+      const base = f.permissions ?? ecransDuRole(f.role);
+      const suivante = coche ? [...new Set([...base, cle])] : base.filter((e) => e !== cle);
+      // Revenu à l'équivalent du rôle : on repasse à null, plus lisible en base.
+      const complet = suivante.length === ecransDuRole(f.role).length;
+      return { ...f, permissions: complet ? null : suivante };
+    });
+  };
+
   const soumettre = async () => {
     setEnvoi(true);
     setErreur(null);
@@ -276,6 +339,8 @@ function ModaleUtilisateur({
         establishmentId: form.establishmentId ? Number(form.establishmentId) : null,
         fonction: form.fonction.trim() || undefined,
         dateEntree: form.dateEntree || undefined,
+        permissions: form.permissions,
+        ...(form.empreinte ? { visageEmpreinte: form.empreinte, photoUrl: form.photo } : {}),
       };
       if (utilisateur) {
         await modifierUtilisateur(utilisateur.id, { ...commun, actif: form.actif });
@@ -368,7 +433,7 @@ function ModaleUtilisateur({
             <div className="sm:col-span-2">
               <Champ
                 label="Code d'accès (6 chiffres)"
-                aide="C'est tout ce que la personne aura à saisir : elle touchera son nom dans la liste, puis composera ce code."
+                aide="Utilisé pour les connexions suivantes de la journée, une fois le pointage fait."
               >
                 <Saisie
                   inputMode="numeric"
@@ -406,6 +471,102 @@ function ModaleUtilisateur({
           )
         )}
       </div>
+
+      {/* --- Photo d'inscription : sert au pointage du matin --- */}
+      {terrain && (
+        <div className="mt-5 pt-5 border-t border-gray-200">
+          <div className="flex items-center gap-2 mb-1">
+            <ScanFace className="h-5 w-5 text-indigo-600" />
+            <h3 className="font-medium text-gray-900">Photo d'inscription</h3>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            Elle sert à reconnaître la personne au pointage du matin. Ce qui est comparé n'est pas
+            l'image mais une empreinte de 128 nombres, dont on ne peut pas reconstituer un visage.
+          </p>
+
+          {form.photo ? (
+            <div className="flex items-center gap-4">
+              <img
+                src={form.photo}
+                alt=""
+                className="h-24 w-24 rounded-xl object-cover border border-gray-200"
+              />
+              <div className="min-w-0">
+                <p className="inline-flex items-center gap-1.5 text-sm font-medium text-green-700">
+                  <Check className="h-4 w-4" />
+                  Visage enregistré
+                </p>
+                <Bouton
+                  variante="secondaire"
+                  onClick={() => setForm({ ...form, photo: "", empreinte: null })}
+                  className="mt-2 py-1.5"
+                >
+                  Reprendre
+                </Bouton>
+              </div>
+            </div>
+          ) : (
+            <>
+              <Camera
+                capturerPhoto
+                libelleAction="Prendre la photo"
+                onLecture={({ empreinte, photo }) =>
+                  setForm((f) => ({ ...f, empreinte, photo: photo ?? "" }))
+                }
+                message="Cadrez le visage dans le cercle, dans un endroit bien éclairé."
+              />
+              <p className="mt-3 text-xs text-gray-500">
+                Facultatif à la création : sans photo, la personne se connectera au code, et son
+                arrivée sera marquée non vérifiée. Vous pourrez l'ajouter plus tard.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* --- Droits par écran --- */}
+      {form.role !== "admin" && (
+        <div className="mt-5 pt-5 border-t border-gray-200">
+          <div className="flex items-center gap-2 mb-1">
+            <ShieldCheck className="h-5 w-5 text-indigo-600" />
+            <h3 className="font-medium text-gray-900">Écrans autorisés</h3>
+          </div>
+          <p className="text-sm text-gray-500 mb-3">
+            Par défaut, la personne accède à tout ce que son rôle permet. Décochez pour restreindre.
+            On ne peut jamais accorder plus que le rôle : ces cases retirent, elles n'ajoutent pas.
+          </p>
+
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {ecransDuRole(form.role).map((cle) => {
+              const coche = form.permissions === null || form.permissions.includes(cle);
+              return (
+                <label
+                  key={cle}
+                  className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-gray-200 text-sm cursor-pointer hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={coche}
+                    onChange={(e) => basculerEcran(cle, e.target.checked)}
+                    className="h-4 w-4 rounded accent-indigo-600"
+                  />
+                  <span className="text-gray-800">{ECRAN_LABELS[cle]}</span>
+                </label>
+              );
+            })}
+          </div>
+
+          {form.permissions !== null && (
+            <button
+              type="button"
+              onClick={() => setForm({ ...form, permissions: null })}
+              className="mt-3 text-sm text-indigo-600 hover:underline"
+            >
+              Rétablir tous les droits du rôle
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="p-3 mt-4 bg-gray-50 rounded-lg">
         <p className="text-xs font-medium text-gray-700 mb-1.5">

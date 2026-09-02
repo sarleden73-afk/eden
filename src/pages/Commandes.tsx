@@ -11,6 +11,7 @@ import { exporterListePDF } from "../lib/export";
 import { cn } from "../lib/utils";
 import { ORDER_STATUS_LABELS, type Order, type OrderStatus, type Profile } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import Aide from "../components/Aide";
 
 const TONS_STATUT: Record<OrderStatus, "neutre" | "info" | "succes" | "alerte" | "danger"> = {
   en_attente: "alerte",
@@ -80,6 +81,14 @@ export default function Commandes() {
       </PageHeader>
 
       <Erreur message={erreur} />
+
+      <Aide cle="commandes">
+        <p>
+          Une commande suit un travail sur mesure — impression, infographie, prestation — de la prise
+          de commande à la livraison. L'<strong>acompte</strong> versé et le reste dû sont suivis
+          ligne par ligne.
+        </p>
+      </Aide>
 
       <div className="grid gap-4 sm:grid-cols-3 mb-5">
         <StatCard titre="Commandes en cours" valeur={enCours.length} icone={Palette} />

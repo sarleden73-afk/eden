@@ -10,12 +10,21 @@ import {
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, StatCard, Chargement, Erreur, SelecteurPeriode, Badge, Vide, Tableau,
+  Modale,
 } from "../components/ui";
-import { getTableauDeBord } from "../services/db";
-import { fcfa, nombre, dateCourte, heure, aujourdhui } from "../lib/format";
+import { getTableauDeBord, getVentes, getDepenses, getPointagesDuJour } from "../services/db";
+import { useAuth } from "../contexts/AuthContext";
+import { fcfa, nombre, dateCourte, dateHeure, heure, aujourdhui } from "../lib/format";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
-import type { DashboardStats, PeriodKey } from "../types";
+import Aide from "../components/Aide";
+import {
+  EXPENSE_LABELS, PAYMENT_LABELS,
+  type DashboardStats, type PeriodKey, type Sale, type Expense, type SelectionEtablissement,
+} from "../types";
+
+/** Carte dont le détail peut être ouvert. La trésorerie n'en a pas : c'est une soustraction, pas une liste. */
+type Detail = "entrees" | "ventes" | "sorties";
 
 /**
  * §5.11 Tableau de bord.
@@ -26,12 +35,15 @@ import type { DashboardStats, PeriodKey } from "../types";
  */
 export default function Dashboard() {
   const { selection, libelle, courant, chargement: chargementEtab } = useEtablissement();
+  const { profil } = useAuth();
   const [periode, setPeriode] = useState<PeriodKey>("jour");
   const [debut, setDebut] = useState(aujourdhui());
   const [fin, setFin] = useState(aujourdhui());
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [monArrivee, setMonArrivee] = useState<string | null>(null);
 
   useEffect(() => {
     if (chargementEtab) return;
@@ -44,6 +56,22 @@ export default function Dashboard() {
     return () => { annule = true; };
   }, [periode, debut, fin, selection, chargementEtab]);
 
+  // Heure d'arrivée du jour, pour le seul tableau de bord personnel. L'échec
+  // est silencieux : ne pas connaître son heure d'arrivée ne doit pas empêcher
+  // de voir ses ventes.
+  useEffect(() => {
+    if (!stats?.restreint || !profil) return;
+    let annule = false;
+    getPointagesDuJour(selection)
+      .then((j) => {
+        if (annule) return;
+        const mien = j.pointages.find((p) => p.profileId === profil.id);
+        setMonArrivee(mien?.arriveA ?? null);
+      })
+      .catch(() => { /* information d'appoint */ });
+    return () => { annule = true; };
+  }, [stats?.restreint, profil, selection]);
+
   const consolide = stats?.etablissementId === null;
   const etabs = stats?.parEtablissement ?? [];
 
@@ -52,7 +80,7 @@ export default function Dashboard() {
   const serie = (stats?.serie ?? []).map((j) => {
     const ligne: Record<string, string | number> = { jour: dateCourte(j.date).slice(0, 5) };
     for (const e of etabs) ligne[e.nom] = j.valeurs[String(e.establishmentId)] ?? 0;
-    if (!stats?.restreint) ligne["Dépenses"] = j.depenses;
+    if (!stats?.restreint) ligne["Crédit (sorties)"] = j.depenses;
     return ligne;
   });
 
@@ -76,6 +104,29 @@ export default function Dashboard() {
 
       <Erreur message={erreur} />
 
+      <Aide cle="tableau-de-bord">
+        <p>
+          Trois chiffres et leur solde : le <strong>débit</strong> est ce qui est entré en caisse,
+          le <strong>crédit</strong> ce qui en est sorti, le <strong>reste en caisse</strong> la
+          différence entre les deux sur la période choisie en haut à droite.
+        </p>
+        <p>
+          Cliquez sur une carte pour voir les opérations qui composent son total : c'est là qu'on
+          retrouve la vente ou la dépense qui explique un écart.
+        </p>
+      </Aide>
+
+      <Aide cle="tableau-de-bord-agent" pour={["caissier", "technicien"]} titre="Votre tableau de bord">
+        <p>
+          Vous voyez ici <strong>vos propres ventes</strong>, et elles seules. Changez la période en
+          haut à droite pour votre journée, votre semaine, votre mois ou votre année.
+        </p>
+        <p>
+          Cet écran est en lecture seule : il rend compte de ce que vous avez enregistré, rien n'y
+          est modifiable. Pour corriger une vente, adressez-vous à un responsable.
+        </p>
+      </Aide>
+
       {(chargement || chargementEtab) && !stats ? (
         <Chargement />
       ) : stats ? (
@@ -90,34 +141,47 @@ export default function Dashboard() {
             stats.restreint ? "lg:grid-cols-3" : "lg:grid-cols-4"
           )}>
             <StatCard
-              titre={stats.restreint ? "Vos ventes" : "Chiffre d'affaires"}
+              titre={stats.restreint ? "Vos ventes" : "Débit (entrées)"}
               valeur={fcfa(stats.ca)}
               icone={TrendingUp}
               detail={consolide ? "Cumul des établissements" : libelle}
+              onDetail={() => setDetail("entrees")}
             />
             <StatCard
               titre="Nombre de ventes"
               valeur={nombre(stats.nbVentes)}
               icone={ShoppingCart}
+              onDetail={() => setDetail("ventes")}
             />
             {!stats.restreint ? (
               <>
                 <StatCard
-                  titre="Dépenses"
+                  titre="Crédit (sorties)"
                   valeur={fcfa(stats.depenses)}
                   icone={TrendingDown}
                   detail="Salaires, loyer, achats, imprévus…"
+                  onDetail={() => setDetail("sorties")}
                 />
+                {/* Pas de détail sur cette carte : c'est une soustraction entre
+                    les deux précédentes, son détail est le leur. */}
                 <StatCard
-                  titre="Trésorerie nette"
+                  titre="Reste en caisse"
                   valeur={fcfa(stats.tresorerie)}
                   icone={stats.tresorerie >= 0 ? Wallet : TrendingDown}
                   ton={stats.tresorerie >= 0 ? "succes" : "danger"}
-                  detail="Chiffre d'affaires − dépenses"
+                  detail="Débit − crédit"
                 />
               </>
             ) : (
-              <StatCard titre="Établissement" valeur={libelle} icone={Building2} />
+              // Pour l'agent, l'heure d'arrivée vaut mieux que le rappel de son
+              // établissement : il le connaît, il y travaille.
+              <StatCard
+                titre="Votre arrivée aujourd'hui"
+                valeur={monArrivee ? heure(monArrivee) : "Non pointée"}
+                icone={Building2}
+                ton={monArrivee ? "succes" : "neutre"}
+                detail={libelle}
+              />
             )}
           </div>
 
@@ -131,7 +195,7 @@ export default function Dashboard() {
                 </p>
               </div>
               <Tableau
-                entetes={["Établissement", " Ventes", " CA", " Dépenses", " Trésorerie nette"]}
+                entetes={["Établissement", " Ventes", " Débit (entrées)", " Crédit (sorties)", " Reste en caisse"]}
               >
                 {etabs.map((e) => (
                   <tr key={e.establishmentId} className="hover:bg-gray-50">
@@ -196,7 +260,7 @@ export default function Dashboard() {
                       <Bar key={e.establishmentId} dataKey={e.nom} fill={e.couleur} radius={[3, 3, 0, 0]} />
                     ))}
                     {!stats.restreint && (
-                      <Bar dataKey="Dépenses" fill="#c05252" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="Crédit (sorties)" fill="#c05252" radius={[3, 3, 0, 0]} />
                     )}
                   </BarChart>
                 </ResponsiveContainer>
@@ -281,7 +345,136 @@ export default function Dashboard() {
           </div>
         </div>
       ) : null}
+
+      {/* Détail d'un indicateur : les lignes qui composent le total affiché. */}
+      <ModaleDetail
+        quoi={detail}
+        onFermer={() => setDetail(null)}
+        periode={periode}
+        debut={debut}
+        fin={fin}
+        etablissement={selection}
+      />
     </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+const TITRES_DETAIL: Record<Detail, string> = {
+  entrees: "Détail du débit (entrées)",
+  ventes: "Détail des ventes",
+  sorties: "Détail du crédit (sorties)",
+};
+
+/**
+ * Détail d'un indicateur.
+ *
+ * Les données sont demandées aux mêmes routes que les écrans Ventes et
+ * Dépenses, avec la période et l'établissement en cours : ce qui s'affiche ici
+ * est donc, par construction, exactement ce qui a servi à calculer le total —
+ * et non un second calcul qui pourrait diverger.
+ */
+function ModaleDetail({
+  quoi, onFermer, periode, debut, fin, etablissement,
+}: {
+  quoi: Detail | null;
+  onFermer: () => void;
+  periode: PeriodKey;
+  debut: string;
+  fin: string;
+  etablissement: SelectionEtablissement;
+}) {
+  const [ventes, setVentes] = useState<Sale[] | null>(null);
+  const [depenses, setDepenses] = useState<Expense[] | null>(null);
+  const [erreur, setErreur] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!quoi) return;
+    let annule = false;
+    setErreur(null);
+    setVentes(null);
+    setDepenses(null);
+
+    const options = { debut, fin, etablissement };
+    const promesse = quoi === "sorties"
+      ? getDepenses(periode, options).then((d) => { if (!annule) setDepenses(d); })
+      : getVentes(periode, options).then((v) => { if (!annule) setVentes(v); });
+
+    promesse.catch((e) => {
+      if (!annule) {
+        setErreur(e instanceof Error ? e.message : "Détail indisponible.");
+      }
+    });
+    return () => { annule = true; };
+  }, [quoi, periode, debut, fin, etablissement]);
+
+  if (!quoi) return null;
+  const listeDepenses = quoi === "sorties";
+
+  return (
+    <Modale ouverte titre={TITRES_DETAIL[quoi]} onFermer={onFermer} taille="xl">
+      <Erreur message={erreur} />
+
+      {listeDepenses ? (
+        !depenses ? (
+          <Chargement />
+        ) : depenses.length === 0 ? (
+          <Vide titre="Aucune sortie sur cette période" icone={TrendingDown} />
+        ) : (
+          <Tableau entetes={["Date", "Poste", "Motif", "Établissement", "Par", " Montant"]}>
+            {depenses.map((d) => (
+              <tr key={d.id} className="hover:bg-gray-50">
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateCourte(d.dateDepense)}</td>
+                <td className="px-4 py-3 text-gray-900 whitespace-nowrap">{EXPENSE_LABELS[d.categorie]}</td>
+                <td className="px-4 py-3 text-gray-700 max-w-xs">
+                  <span className="block truncate" title={d.motif}>{d.motif}</span>
+                </td>
+                <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{d.etablissementNom ?? "—"}</td>
+                <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{d.effectueParNom ?? "—"}</td>
+                <td className="px-4 py-3 text-right tabulaire font-medium text-red-700 whitespace-nowrap">
+                  {fcfa(d.montant)}
+                </td>
+              </tr>
+            ))}
+            <tr className="bg-gray-50 font-semibold">
+              <td className="px-4 py-3" colSpan={5}>Total — {depenses.length} sortie(s)</td>
+              <td className="px-4 py-3 text-right tabulaire text-red-700">
+                {fcfa(depenses.reduce((s, d) => s + d.montant, 0))}
+              </td>
+            </tr>
+          </Tableau>
+        )
+      ) : !ventes ? (
+        <Chargement />
+      ) : ventes.length === 0 ? (
+        <Vide titre="Aucune vente sur cette période" icone={ShoppingCart} />
+      ) : (
+        <Tableau entetes={["Date", "Reçu", "Établissement", "Vendeur", "Moyen", " Total"]}>
+          {ventes.map((v) => (
+            <tr key={v.id} className={cn("hover:bg-gray-50", v.statut === "annulee" && "opacity-60")}>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{dateHeure(v.createdAt)}</td>
+              <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
+                {v.numeroRecu}
+                {v.statut === "annulee" && <Badge ton="danger">Annulée</Badge>}
+              </td>
+              <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{v.etablissementNom ?? "—"}</td>
+              <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{v.vendeurNom ?? "—"}</td>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{PAYMENT_LABELS[v.paymentMethod]}</td>
+              <td className="px-4 py-3 text-right tabulaire font-medium text-green-700 whitespace-nowrap">
+                {fcfa(v.total)}
+              </td>
+            </tr>
+          ))}
+          <tr className="bg-gray-50 font-semibold">
+            <td className="px-4 py-3" colSpan={5}>Total — {ventes.length} vente(s)</td>
+            <td className="px-4 py-3 text-right tabulaire text-green-700">
+              {fcfa(ventes.reduce((s, v) => s + v.total, 0))}
+            </td>
+          </tr>
+        </Tableau>
+      )}
+    </Modale>
   );
 }
 

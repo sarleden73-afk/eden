@@ -101,6 +101,9 @@ async function appelPublic<T>(chemin: string, options: RequestInit = {}): Promis
   return reponse.json();
 }
 
+export const getMarque = () =>
+  appelPublic<{ nom: string; logoUrl: string }>("/marque");
+
 export const getEtablissementsConnexion = () =>
   appelPublic<{ id: number; nom: string; couleur: string }[]>("/etablissements");
 

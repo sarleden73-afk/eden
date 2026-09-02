@@ -10,7 +10,7 @@ import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import SelecteurEtablissement from "./SelecteurEtablissement";
-import { getAlertesStock } from "../services/db";
+import { getAlertesStock, getParametres } from "../services/db";
 import { ROLE_LABELS, type UserRole } from "../types";
 
 interface Entree {
@@ -57,6 +57,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [menuOuvert, setMenuOuvert] = useState(false);
   const [nbAlertes, setNbAlertes] = useState(0);
+  const [marque, setMarque] = useState({ nom: "EDEN", logoUrl: "" });
 
   // Menu réductible : sur l'écran de vente, chaque pixel gagné va au panier.
   const [reduit, setReduit] = useState(() => {
@@ -84,6 +85,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return () => { annule = true; window.clearInterval(timer); };
   }, [location.pathname, selection]);
 
+  // Identité de l.entreprise : chargée une fois, purement décorative.
+  useEffect(() => {
+    getParametres()
+      .then((p) => setMarque({
+        nom: p.entreprise?.nom || "EDEN",
+        logoUrl: p.entreprise?.logoUrl || "",
+      }))
+      .catch(() => { /* le bandeau garde son icône par défaut */ });
+  }, []);
+
   useEffect(() => { setMenuOuvert(false); }, [location.pathname]);
 
   const role = profil?.role ?? "caissier";
@@ -95,10 +106,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         "h-16 flex items-center border-b border-gray-800 shrink-0",
         reduit ? "justify-center px-2" : "px-5"
       )}>
-        <Sprout className={cn("h-6 w-6 text-indigo-500 shrink-0", !reduit && "mr-2.5")} />
+        {marque.logoUrl ? (
+          <img
+            src={marque.logoUrl}
+            alt=""
+            className={cn("h-7 w-7 rounded object-contain bg-white shrink-0", !reduit && "mr-2.5")}
+            onError={(e) => { e.currentTarget.style.display = "none"; }}
+          />
+        ) : (
+          <Sprout className={cn("h-6 w-6 text-indigo-500 shrink-0", !reduit && "mr-2.5")} />
+        )}
         {!reduit && (
           <div className="min-w-0">
-            <div className="text-sm font-bold tracking-wide text-white truncate">EDEN</div>
+            <div className="text-sm font-bold tracking-wide text-[#fff] truncate">{marque.nom}</div>
             <div className="text-[10px] uppercase tracking-widest text-gray-500">Groupe</div>
           </div>
         )}

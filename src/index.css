@@ -1,20 +1,23 @@
 @import "tailwindcss";
 
-/* Identité EDEN MULTI-SERVICES.
+/* ===========================================================================
+   Identité EDEN.
+
    Les tokens `indigo` et `gray` de Tailwind sont redéfinis plutôt que d'inventer
    de nouveaux noms : toutes les classes utilitaires standard (bg-indigo-600,
-   text-gray-500...) prennent la charte sans réécriture, et un futur composant
-   copié d'ailleurs s'y conforme automatiquement.
+   text-gray-500…) prennent la charte sans réécriture, et un composant copié
+   d'ailleurs s'y conforme automatiquement.
 
-   indigo -> vert Eden (couleur d'accent, actions primaires)
-   gray   -> gris chauds, du blanc cassé au noir profond (structure) */
+   indigo -> couleur d'accent, choisie dans les paramètres
+   gray   -> structure, du fond au texte
+   =========================================================================== */
 @theme {
   --color-indigo-50:  #eefbf3;
   --color-indigo-100: #d6f5e2;
   --color-indigo-200: #b0e9c9;
   --color-indigo-300: #7bd7a8;
   --color-indigo-400: #45bd83;
-  --color-indigo-500: #1fa066; /* vert Eden */
+  --color-indigo-500: #1fa066;
   --color-indigo-600: #158053;
   --color-indigo-700: #136644;
   --color-indigo-800: #135138;
@@ -39,9 +42,97 @@
   --color-amber-600: #b8860b;
 }
 
-body {
+/* ---------------------------------------------------------------------------
+   Palettes d'accent
+   ---------------------------------------------------------------------------
+   Seules les nuances réellement utilisées sont redéfinies : 50 et 100 pour les
+   fonds discrets, 400 à 700 pour les boutons et le texte, 950 pour l'élément
+   actif du menu. */
+
+:root[data-accent="or"] {
+  --color-indigo-50:  #fdf8ec; --color-indigo-100: #faf0d2;
+  --color-indigo-200: #f2dda6; --color-indigo-300: #e8c477;
+  --color-indigo-400: #d9a83c; --color-indigo-500: #c08d16;
+  --color-indigo-600: #a07510; --color-indigo-700: #7d5a0d;
+  --color-indigo-800: #5f4510; --color-indigo-900: #4a360f; --color-indigo-950: #241a05;
+}
+
+:root[data-accent="bleu"] {
+  --color-indigo-50:  #eef4ff; --color-indigo-100: #d9e6ff;
+  --color-indigo-200: #bcd3ff; --color-indigo-300: #8fb6ff;
+  --color-indigo-400: #5b90fa; --color-indigo-500: #2f6be0;
+  --color-indigo-600: #1f52bd; --color-indigo-700: #1b4198;
+  --color-indigo-800: #1a377b; --color-indigo-900: #1a3166; --color-indigo-950: #0d1b3d;
+}
+
+:root[data-accent="violet"] {
+  --color-indigo-50:  #f5f1ff; --color-indigo-100: #ece5ff;
+  --color-indigo-200: #dbcdff; --color-indigo-300: #c1a8ff;
+  --color-indigo-400: #a077fa; --color-indigo-500: #8348ec;
+  --color-indigo-600: #6f2fd4; --color-indigo-700: #5d24ae;
+  --color-indigo-800: #4e208e; --color-indigo-900: #421d75; --color-indigo-950: #260f47;
+}
+
+:root[data-accent="terre"] {
+  --color-indigo-50:  #fdf4ef; --color-indigo-100: #fbe6da;
+  --color-indigo-200: #f6c9b2; --color-indigo-300: #efa480;
+  --color-indigo-400: #e6784c; --color-indigo-500: #d4552a;
+  --color-indigo-600: #b8401f; --color-indigo-700: #98311c;
+  --color-indigo-800: #7c2b1c; --color-indigo-900: #67261a; --color-indigo-950: #38100a;
+}
+
+/* ---------------------------------------------------------------------------
+   Mode sombre
+   ---------------------------------------------------------------------------
+   Ce n'est pas une simple inversion de la palette : la barre latérale doit
+   rester sombre dans les deux modes, et les pastilles d'état (vert, rouge,
+   ambre) resteraient illisibles si l'on gardait leurs fonds clairs. On
+   redéfinit donc les surfaces, le texte, et les tons 50/100 des couleurs
+   sémantiques. */
+
+:root[data-theme="dark"] {
+  /* `bg-white` devient la surface sombre des cartes. Conséquence : `text-white`
+     s.assombrirait aussi. Les textes réellement blancs (menu, titre de
+     connexion, boutons colorés) utilisent donc `text-[#fff]`, littéral et
+     indépendant du thème. */
+  --color-white:    #1c1a17;
+  --color-gray-50:  #121110;  /* fond de page */
+  --color-gray-100: #24211d;
+  --color-gray-200: #2f2b26;  /* bordures */
+  --color-gray-300: #3d3830;
+  --color-gray-400: #6b6459;
+  --color-gray-500: #918a7c;
+  --color-gray-600: #b5ac9d;
+  --color-gray-700: #d0c8ba;
+  --color-gray-800: #e7e1d6;
+  --color-gray-900: #f5f1e8;  /* texte principal */
+  --color-gray-950: #0a0908;  /* barre latérale : sombre dans les deux modes */
+
+  /* Pastilles d'état : fond assombri, texte éclairci. */
+  --color-green-50: #10251a; --color-green-100: #14311f;
+  --color-green-600: #55c98a; --color-green-700: #6fd79b; --color-green-800: #8fe3b3;
+  --color-green-200: #1e4630; --color-green-300: #2c6444; --color-green-900: #b6efcd;
+
+  --color-red-50: #2a1312; --color-red-100: #3a1a18;
+  --color-red-600: #f08a80; --color-red-700: #f4a099; --color-red-800: #f8bdb7;
+  --color-red-200: #52201d; --color-red-300: #6d2c27; --color-red-900: #fbd5d1;
+
+  --color-amber-50: #2a2110; --color-amber-100: #3a2d13;
+  --color-amber-200: #574119; --color-amber-500: #e0b23a; --color-amber-600: #eebf52;
+  --color-amber-700: #f0cc6a; --color-amber-800: #f5dc96; --color-amber-900: #f9e9bd;
+}
+
+/* Le fond est posé sur <html> et non sur <body> : c'est lui qui peint le
+   canevas, y compris la zone de rebond au-delà du contenu sur mobile. Le mettre
+   sur body laisserait apparaître du blanc en surdéfilement en mode sombre. */
+html {
   background-color: var(--color-gray-50);
   color: var(--color-gray-900);
+}
+
+body {
+  background-color: transparent;
+  color: inherit;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -57,7 +148,14 @@ input, select, textarea {
   font-size: 16px;
 }
 
+/* Champs de saisie en mode sombre : le navigateur les rendrait blancs. */
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  color-scheme: dark;
+}
+
 @media print {
   .sans-impression { display: none !important; }
-  body { background: white; }
+  body { background: white; color: black; }
 }

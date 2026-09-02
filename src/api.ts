@@ -382,6 +382,14 @@ export function createApiApp() {
     res.json(toCamelCaseArray(data ?? []));
   }));
 
+  /** Nom et logo de l.entreprise, pour habiller l.écran de connexion. */
+  publique.get("/marque", route(async (_req, res) => {
+    const { data } = await supabase
+      .from("settings").select("value").eq("key", "entreprise").maybeSingle();
+    const v = (data?.value ?? {}) as { nom?: string; logoUrl?: string };
+    res.json({ nom: v.nom ?? "EDEN MULTI-SERVICES", logoUrl: v.logoUrl ?? "" });
+  }));
+
   publique.get("/personnel", route(async (req, res) => {
     let q = supabase
       .from("profiles").select("id, full_name, fonction, role, establishment_id")

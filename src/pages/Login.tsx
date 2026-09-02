@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent, type ButtonHTMLAttributes } from "
 import { Sprout, LogIn, ShieldCheck, ArrowLeft, Delete, User } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { Bouton, Champ, Saisie, Erreur } from "../components/ui";
-import { getEtablissementsConnexion, getPersonnelConnexion } from "../services/db";
+import { getEtablissementsConnexion, getPersonnelConnexion, getMarque } from "../services/db";
 import { cn } from "../lib/utils";
 import type { AgentConnexion } from "../types";
 
@@ -20,16 +20,32 @@ type Panneau = "personnel" | "administration";
  */
 export default function Login() {
   const [panneau, setPanneau] = useState<Panneau>("personnel");
+  const [marque, setMarque] = useState({ nom: "EDEN MULTI-SERVICES", logoUrl: "" });
+
+  // Le logo est facultatif : son absence, ou son échec de chargement, laisse
+  // simplement l.icône par défaut.
+  useEffect(() => {
+    getMarque().then(setMarque).catch(() => {});
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-7">
-          <div className="p-3 bg-indigo-950 rounded-2xl">
-            <Sprout className="h-8 w-8 text-indigo-400" />
-          </div>
-          <h1 className="mt-4 text-xl font-bold text-white tracking-wide text-center">
-            EDEN MULTI-SERVICES
+          {marque.logoUrl ? (
+            <img
+              src={marque.logoUrl}
+              alt=""
+              className="h-16 w-16 rounded-2xl object-contain bg-white p-1"
+              onError={(e) => { e.currentTarget.style.display = "none"; }}
+            />
+          ) : (
+            <div className="p-3 bg-indigo-950 rounded-2xl">
+              <Sprout className="h-8 w-8 text-indigo-400" />
+            </div>
+          )}
+          <h1 className="mt-4 text-xl font-bold text-[#fff] tracking-wide text-center">
+            {marque.nom}
           </h1>
           <p className="mt-1 text-sm text-gray-500 text-center">
             {panneau === "personnel"
@@ -141,7 +157,7 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
                   className={cn(
                     "flex-1 px-3 py-2 text-sm font-medium rounded-lg border transition-colors",
                     etablissementId === e.id
-                      ? "text-white border-transparent"
+                      ? "text-[#fff] border-transparent"
                       : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
                   )}
                   style={etablissementId === e.id ? { backgroundColor: e.couleur } : undefined}

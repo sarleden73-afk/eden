@@ -266,7 +266,7 @@ export default function Vente() {
                         className={cn(
                           "px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap border shrink-0 transition-colors",
                           categorieActive === c
-                            ? "bg-indigo-600 text-white border-indigo-600"
+                            ? "bg-indigo-600 text-[#fff] border-indigo-600"
                             : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
                         )}
                       >
@@ -355,7 +355,7 @@ export default function Vente() {
               onClick={() => setPanierOuvert(true)}
               className={cn(
                 "lg:hidden fixed bottom-0 inset-x-0 z-30 flex items-center gap-3 px-4 py-3",
-                "bg-gray-950 text-white shadow-[0_-4px_16px_rgba(0,0,0,0.15)] sans-impression"
+                "bg-gray-950 text-[#fff] shadow-[0_-4px_16px_rgba(0,0,0,0.15)] sans-impression"
               )}
             >
               <span className="relative">

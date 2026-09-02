@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { EtablissementProvider } from "./contexts/EtablissementContext";
+import { ThemeProvider } from "./contexts/ThemeContext";
 import type { UserRole } from "./types";
 
 import Login from "./pages/Login";
@@ -58,6 +59,9 @@ function ConnexionOuAccueil() {
 export default function App() {
   return (
     <BrowserRouter>
+      {/* L.apparence ne dépend d.aucune donnée : elle enveloppe tout, pour que
+          le thème s.applique aussi à l.écran de connexion. */}
+      <ThemeProvider>
       <AuthProvider>
         {/* Le contexte d'établissement dépend du profil : il est monté à
             l'intérieur de l'authentification. */}
@@ -88,6 +92,7 @@ export default function App() {
           </Routes>
         </EtablissementProvider>
       </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

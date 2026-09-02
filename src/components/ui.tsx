@@ -34,9 +34,9 @@ export function Card({ className, children }: { className?: string; children: Re
 type BoutonVariante = "primaire" | "secondaire" | "danger" | "fantome";
 
 const VARIANTES: Record<BoutonVariante, string> = {
-  primaire: "bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-indigo-300",
+  primaire: "bg-indigo-600 text-[#fff] hover:bg-indigo-700 disabled:bg-indigo-300",
   secondaire: "bg-white text-gray-700 border border-gray-300 hover:bg-gray-50",
-  danger: "bg-red-600 text-white hover:bg-red-700 disabled:bg-red-300",
+  danger: "bg-red-600 text-[#fff] hover:bg-red-700 disabled:bg-red-300",
   fantome: "text-gray-600 hover:bg-gray-100",
 };
 
@@ -288,7 +288,7 @@ export function SelecteurPeriode({
             onClick={() => onChange({ periode: p.cle, debut, fin })}
             className={cn(
               "px-3 py-1.5 text-sm font-medium rounded-md transition-colors",
-              periode === p.cle ? "bg-indigo-600 text-white" : "text-gray-600 hover:bg-gray-100"
+              periode === p.cle ? "bg-indigo-600 text-[#fff]" : "text-gray-600 hover:bg-gray-100"
             )}
           >
             {p.label}

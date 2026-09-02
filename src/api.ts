@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express, { Response } from "express";
-import { supabase } from "./lib/supabase-server.js";
+import { supabase, creerClientAuth } from "./lib/supabase-server.js";
 import { requireAuth, AuthRequest } from "./middleware/auth.js";
 import { toCamelCase, toCamelCaseArray, toSnakeCase } from "./lib/caseConvert.js";
 import type {
@@ -425,7 +425,10 @@ export function createApiApp() {
 
     if (!profil || !profil.actif || profil.mode_connexion !== "pin") return echec();
 
-    const { data, error } = await supabase.auth.signInWithPassword({
+    // Client jetable : signer avec le client partagé lui installerait la
+    // session de l.agent, et toutes les requêtes suivantes de cette instance
+    // partiraient avec son jeton au lieu de la clé secrète.
+    const { data, error } = await creerClientAuth().auth.signInWithPassword({
       email: profil.email,
       password: String(pin),
     });

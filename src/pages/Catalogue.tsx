@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Package, Plus, Pencil, Search, Layers, Tag, FileDown, Lock } from "lucide-react";
+import { Package, Plus, Pencil, Search, Layers, Tag, Lock } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide, BandeauChoisirEtablissement,
+  Badge, Modale, Tableau, Vide, BandeauChoisirEtablissement, BoutonsExport,
 } from "../components/ui";
 import {
   getProduits, getPacks, getCategories, getFournisseurs,
   creerProduit, modifierProduit, creerPack, modifierPack, creerCategorie,
 } from "../services/db";
 import { fcfa, quantite as fmtQuantite } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -71,8 +71,8 @@ export default function Catalogue() {
     return produits.filter((p) => !terme || p.nom.toLowerCase().includes(terme));
   }, [produits, recherche]);
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "catalogue-eden",
       ["Article", "Catégorie", "Établissement", "Type", "Prix de vente", "Prix d'achat", "Marge", "Stock", "Seuil", "Actif"],
       produitsFiltres.map((p) => [
@@ -100,7 +100,10 @@ export default function Catalogue() {
         {!modifiable && (
           <Badge ton="neutre"><Lock className="inline h-3 w-3 mr-1" />Consultation seule</Badge>
         )}
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter}>PDF</Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+        />
         {creationPossible && onglet === "produits" && (
           <Bouton icone={Plus} onClick={() => setProduitEdite("nouveau")}>Nouvel article</Bouton>
         )}

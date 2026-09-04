@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { Palette, Plus, Pencil, FileDown, Phone, CalendarClock, AlertCircle } from "lucide-react";
+import { Palette, Plus, Pencil, Phone, CalendarClock, AlertCircle } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide, StatCard,
+  Badge, Modale, Tableau, Vide, StatCard, BoutonsExport,
 } from "../components/ui";
 import { getCommandes, creerCommande, modifierCommande, getUtilisateurs } from "../services/db";
 import { fcfa, dateCourte, aujourdhui } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { ORDER_STATUS_LABELS, type Order, type OrderStatus, type Profile } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -55,8 +55,8 @@ export default function Commandes() {
     (c) => c.dateLivraisonPrevue && new Date(c.dateLivraisonPrevue) < new Date(aujourdhui())
   );
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "commandes-eden",
       ["N°", "Client", "Téléphone", "Prestation", "Description", "Qté", "P.U.", "Total", "Acompte", "Reste", "Commandée le", "Livraison prévue", "Statut", "Technicien"],
       commandes.map((c) => [
@@ -74,9 +74,11 @@ export default function Commandes() {
           <option value="">Tous les statuts</option>
           {Object.entries(ORDER_STATUS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </Liste>
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!commandes.length}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!commandes.length}
+        />
         <Bouton icone={Plus} onClick={() => setEdite("nouveau")} disabled={pourEcriture === null} title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}>Nouvelle commande</Bouton>
       </PageHeader>
 

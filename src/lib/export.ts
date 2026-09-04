@@ -237,3 +237,96 @@ function horodatage(): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 }
+
+// ---------------------------------------------------------------------------
+// Export CSV
+// ---------------------------------------------------------------------------
+// Le PDF sert à imprimer et à transmettre ; le CSV sert à recalculer. Un
+// comptable qui reçoit un PDF ressaisit les chiffres à la main, avec les
+// erreurs que cela suppose. Les deux formats partent donc des mêmes données au
+// même moment : ils ne peuvent pas raconter deux histoires différentes.
+
+/**
+ * Une cellule CSV.
+ *
+ * Point-virgule plutôt que virgule, et marque d'ordre des octets en tête :
+ * c'est ce qu'attend Excel en configuration française. Avec une virgule, il
+ * range toute la ligne dans une seule colonne ; sans la marque, il lit l'UTF-8
+ * comme du latin-1 et « Dépenses » devient « DÃ©penses ».
+ */
+function cellule(valeur: string | number | null | undefined): string {
+  if (valeur === null || valeur === undefined) return "";
+
+  // Les nombres partent bruts, avec la virgule décimale française : c'est ce
+  // qui les rend calculables à l'arrivée. Un montant déjà formaté en
+  // « 12 500 FCFA » serait du texte, et aucune somme ne fonctionnerait dessus.
+  if (typeof valeur === "number") {
+    return Number.isFinite(valeur) ? String(valeur).replace(".", ",") : "";
+  }
+
+  const texte = String(valeur);
+  // Guillemets, point-virgule et sauts de ligne cassent le découpage : la
+  // cellule est alors encadrée de guillemets, ceux qu'elle contient doublés.
+  return /[";\r\n]/.test(texte) ? `"${texte.replace(/"/g, '""')}"` : texte;
+}
+
+const ligneCsv = (cellules: (string | number | null | undefined)[]) =>
+  cellules.map(cellule).join(";");
+
+function telechargerCsv(fichier: string, contenu: string) {
+  const blob = new Blob([`﻿${contenu}`], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const lien = document.createElement("a");
+  lien.href = url;
+  lien.download = `${fichier}-${horodatage()}.csv`;
+  document.body.appendChild(lien);
+  lien.click();
+  document.body.removeChild(lien);
+  URL.revokeObjectURL(url);
+}
+
+/** Export CSV d'une liste simple — pendant exact de `exporterListePDF`. */
+export function exporterListeCSV(
+  fichier: string,
+  entetes: string[],
+  lignes: (string | number)[][],
+  // `paysage` n'a pas de sens ici mais reste accepté : les deux exports sont
+  // appelés avec le même objet d'options, et le refuser obligerait chaque
+  // écran à en construire deux.
+  options: { titre?: string; perimetre?: string; sousTitre?: string; paysage?: boolean } = {}
+): void {
+  const tete = [ligneCsv([options.titre ?? TITRES[fichier] ?? fichier])];
+  if (options.perimetre) tete.push(ligneCsv([options.perimetre]));
+  if (options.sousTitre) tete.push(ligneCsv([options.sousTitre]));
+
+  telechargerCsv(fichier, [
+    ...tete, "", ligneCsv(entetes), ...lignes.map(ligneCsv),
+  ].join("\r\n"));
+}
+
+/**
+ * Export CSV d'un document à plusieurs tableaux — pendant de `exporterPDF`.
+ *
+ * Les sections sont empilées, séparées par une ligne vide et leur titre. Un
+ * fichier par section serait plus propre pour un tableur, mais obligerait à
+ * en ouvrir quatre pour lire un seul compte de résultat.
+ */
+export function exporterCSV(options: OptionsPdf): void {
+  const lignes = [ligneCsv([options.titre])];
+  if (options.perimetre) lignes.push(ligneCsv([options.perimetre]));
+  if (options.sousTitre) lignes.push(ligneCsv([options.sousTitre]));
+
+  if (options.synthese?.length) {
+    lignes.push("", ligneCsv(["Synthèse"]));
+    for (const s of options.synthese) lignes.push(ligneCsv([s.libelle, s.valeur]));
+  }
+
+  for (const section of options.sections) {
+    lignes.push("");
+    if (section.titre) lignes.push(ligneCsv([section.titre]));
+    lignes.push(ligneCsv(section.entetes));
+    for (const l of section.lignes) lignes.push(ligneCsv(l));
+  }
+
+  telechargerCsv(options.fichier, lignes.join("\r\n"));
+}

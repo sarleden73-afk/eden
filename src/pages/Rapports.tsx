@@ -4,17 +4,17 @@ import {
   ResponsiveContainer, Legend,
 } from "recharts";
 import {
-  BarChart3, FileDown, Printer, TrendingUp, TrendingDown, Users, Package,
+  BarChart3, TrendingUp, TrendingDown, Users, Package,
   Scale, ShoppingCart,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Erreur, Chargement, Badge, Tableau, Vide,
-  StatCard, SelecteurPeriode,
+  StatCard, SelecteurPeriode, BoutonsExport,
 } from "../components/ui";
 import { getRapport } from "../services/db";
 import { fcfa, nombre, dateCourte, aujourdhui } from "../lib/format";
-import { exporterPDF } from "../lib/export";
+import { exporterPDF, exporterCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import Aide from "../components/Aide";
@@ -49,7 +49,7 @@ export default function Rapports() {
 
   useEffect(() => { void recharger(); }, [recharger]);
 
-  const exporterTout = () => {
+  const exporterTout = (format: "pdf" | "csv") => {
     if (!rapport) return;
     // Un seul fichier, sections empilées : plus simple à archiver et à envoyer
     // que cinq exports séparés.
@@ -98,7 +98,7 @@ export default function Rapports() {
         ["Achats — restant dû", rapport.achats.restant],
       ]);
 
-    void exporterPDF({
+    void (format === "pdf" ? exporterPDF : exporterCSV)({
       fichier: "rapport-eden",
       titre: "Rapport d'activité",
       perimetre: libelle,
@@ -121,12 +121,11 @@ export default function Rapports() {
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporterTout} disabled={!rapport}>
-          PDF
-        </Bouton>
-        <Bouton variante="secondaire" icone={Printer} onClick={exporterPDF} disabled={!rapport}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporterTout("pdf")}
+          onCsv={() => exporterTout("csv")}
+          desactive={!rapport}
+        />
       </PageHeader>
 
       <Erreur message={erreur} />

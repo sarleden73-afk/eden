@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Calculator, FileDown, Info, Plus } from "lucide-react";
+import { Calculator, Info, Plus } from "lucide-react";
 import Layout from "../components/Layout";
 import {
-  PageHeader, Card, Bouton, Erreur, Chargement, Tableau, SelecteurPeriode, Badge,
+  PageHeader, Card, Bouton, Erreur, Chargement, Tableau, SelecteurPeriode, Badge, BoutonsExport,
 } from "../components/ui";
 import { getRapport, getLivreComptable } from "../services/db";
 import { fcfa, nombre, dateCourte, aujourdhui } from "../lib/format";
-import { exporterPDF } from "../lib/export";
+import { exporterPDF, exporterCSV } from "../lib/export";
 import ModaleDepense from "../components/ModaleDepense";
 import { cn } from "../lib/utils";
 import {
@@ -62,10 +62,10 @@ export default function Comptabilite() {
 
   useEffect(() => { void recharger(); }, [recharger]);
 
-  const exporter = () => {
+  const exporter = (format: "pdf" | "csv") => {
     if (!rapport) return;
     const t = rapport.totaux;
-    void exporterPDF({
+    void (format === "pdf" ? exporterPDF : exporterCSV)({
       fichier: "comptabilite-eden",
       titre: "Compte de résultat simplifié",
       perimetre: libelle,
@@ -130,7 +130,11 @@ export default function Comptabilite() {
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!rapport}>PDF</Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!rapport}
+        />
         <Bouton icone={Plus} onClick={() => setNouvelleDepense(true)}>Nouvelle dépense</Bouton>
       </PageHeader>
 

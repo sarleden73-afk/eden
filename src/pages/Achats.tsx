@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Truck, Plus, Search, Building2, Eye, Wallet, FileDown, Trash2,
+  Truck, Plus, Search, Building2, Eye, Wallet, Trash2,
 } from "lucide-react";
-import Layout from "../components/Layout";
 import {
-  PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide, StatCard, SelecteurPeriode,
+  Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
+  Badge, Modale, Tableau, Vide, StatCard, SelecteurPeriode, BoutonsExport,
 } from "../components/ui";
 import {
   getAchats, getAchat, creerAchat, reglerAchat,
   getFournisseurs, creerFournisseur, modifierFournisseur, getProduits,
 } from "../services/db";
 import { fcfa, dateCourte, quantite as fmtQuantite, aujourdhui } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import Aide from "../components/Aide";
@@ -23,8 +22,14 @@ import {
 
 type Onglet = "achats" | "fournisseurs";
 
-/** §5.6 Achats et fournisseurs. */
-export default function Achats() {
+/**
+ * §5.6 Achats et fournisseurs.
+ *
+ * Panneau de l'écran Approvisionnement : un achat réceptionné alimente le
+ * stock et fixe le prix d'achat qui sert au calcul de la marge. Séparer les
+ * deux écrans obligeait à faire ce lien de tête.
+ */
+export function PanneauAchats() {
   const { selection, libelle, pourEcriture } = useEtablissement();
   const [onglet, setOnglet] = useState<Onglet>("achats");
   const [periode, setPeriode] = useState<PeriodKey>("mois");
@@ -62,8 +67,8 @@ export default function Achats() {
   const total = achats.reduce((s, a) => s + a.montantTotal, 0);
   const restant = achats.reduce((s, a) => s + a.montantRestant, 0);
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "achats-eden",
       ["N°", "Date", "Fournisseur", "Établissement", "Montant total", "Payé", "Restant dû", "Paiement", "Par", "Justificatif"],
       achats.map((a) => [
@@ -74,24 +79,26 @@ export default function Achats() {
     );
 
   return (
-    <Layout>
-      <PageHeader titre="Achats et fournisseurs" sousTitre={`${libelle} — approvisionnements, règlements et dettes`}>
+    <>
+      <div className="flex flex-wrap items-center justify-end gap-2 mb-4">
         {onglet === "achats" && (
           <>
             <SelecteurPeriode
               periode={periode} debut={debut} fin={fin}
               onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
             />
-            <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!achats.length}>
-              PDF
-            </Bouton>
+            <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!achats.length}
+        />
             <Bouton icone={Plus} onClick={() => setNouvelAchat(true)} disabled={pourEcriture === null} title={pourEcriture === null ? "Choisissez d'abord un établissement" : undefined}>Nouvel achat</Bouton>
           </>
         )}
         {onglet === "fournisseurs" && (
           <Bouton icone={Plus} onClick={() => setFournisseurEdite("nouveau")}>Nouveau fournisseur</Bouton>
         )}
-      </PageHeader>
+      </div>
 
       <Erreur message={erreur} />
 
@@ -230,7 +237,7 @@ export default function Achats() {
         cible={fournisseurEdite} onFermer={() => setFournisseurEdite(null)}
         onSucces={() => { setFournisseurEdite(null); void recharger(); }}
       />
-    </Layout>
+    </>
   );
 }
 

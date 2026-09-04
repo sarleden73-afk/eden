@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { CreditCard, Plus, Check, FileDown, ShieldCheck, Clock } from "lucide-react";
+import { CreditCard, Plus, Check, ShieldCheck, Clock } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide, StatCard, SelecteurPeriode,
+  Badge, Modale, Tableau, Vide, StatCard, SelecteurPeriode, BoutonsExport,
 } from "../components/ui";
 import { getDepenses, validerDepense } from "../services/db";
 import ModaleDepense from "../components/ModaleDepense";
 import { fcfa, dateCourte, aujourdhui } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import {
   EXPENSE_LABELS, PAYMENT_LABELS,
   type Expense, type PeriodKey, type ExpenseCategory,
@@ -59,8 +59,8 @@ export default function Depenses() {
     }
   };
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "depenses-eden",
       ["Date", "Établissement", "Catégorie", "Motif", "Montant", "Paiement", "Effectuée par", "Validée par", "Justificatif"],
       depenses.map((d) => [
@@ -77,9 +77,11 @@ export default function Depenses() {
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!depenses.length}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!depenses.length}
+        />
         <Bouton icone={Plus} onClick={() => setNouvelle(true)}>Nouvelle dépense</Bouton>
       </PageHeader>
 

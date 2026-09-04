@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { CalendarCheck, FileDown, AlertTriangle, Clock, Users } from "lucide-react";
+import { CalendarCheck, AlertTriangle, Clock, Users } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Erreur, Chargement, Badge, Tableau, Vide,
-  StatCard, SelecteurPeriode,
+  StatCard, SelecteurPeriode, BoutonsExport,
 } from "../components/ui";
 import Aide from "../components/Aide";
 import { getPointages } from "../services/db";
 import { heure, dateCourte, aujourdhui } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import type { Pointage, BilanPresence, PeriodKey } from "../types";
 
@@ -50,8 +50,8 @@ export default function Presence() {
   const nonVerifies = pointages.filter((p) => !p.verifie).length;
   const jours = new Set(pointages.map((p) => p.jour)).size;
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "presence-eden",
       ["Employé", "Jours travaillés", "Arrivée moyenne", "Plus tôt", "Plus tard", "Non vérifiées"],
       bilan.map((b) => [b.nom, b.jours, b.arriveeMoyenne, b.plusTot, b.plusTard, b.nonVerifies]),
@@ -65,9 +65,11 @@ export default function Presence() {
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!bilan.length}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!bilan.length}
+        />
       </PageHeader>
 
       <Erreur message={erreur} />

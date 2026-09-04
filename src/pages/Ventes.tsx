@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { ReceiptText, Ban, Eye, FileDown } from "lucide-react";
+import { ReceiptText, Ban, Eye } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Zone, Champ, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide, SelecteurPeriode,
+  Badge, Modale, Tableau, Vide, SelecteurPeriode, BoutonsExport,
 } from "../components/ui";
 import { getVentes, getVente, annulerVente } from "../services/db";
 import { fcfa, dateHeure, quantite as fmtQuantite, aujourdhui } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import {
   PAYMENT_LABELS,
   type Sale, type PeriodKey,
@@ -48,8 +48,8 @@ export default function Ventes() {
   const validees = ventes.filter((v) => v.statut === "validee");
   const total = validees.reduce((s, v) => s + v.total, 0);
 
-  const exporter = () => {
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") => {
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "ventes-eden",
       ["N° reçu", "Date et heure", "Établissement", "Vendeur", "Paiement", "Sous-total", "Remise", "Total", "Statut", "Motif annulation"],
       ventes.map((v) => [
@@ -70,9 +70,11 @@ export default function Ventes() {
           periode={periode} debut={debut} fin={fin}
           onChange={(v) => { setPeriode(v.periode); setDebut(v.debut); setFin(v.fin); }}
         />
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!ventes.length}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!ventes.length}
+        />
       </PageHeader>
 
       <Erreur message={erreur} />

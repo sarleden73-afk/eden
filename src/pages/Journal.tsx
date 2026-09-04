@@ -1,14 +1,14 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
-import { History, FileDown, ChevronDown, ChevronRight, ShieldAlert } from "lucide-react";
+import { History, ChevronDown, ChevronRight, ShieldAlert } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Liste, Erreur, Chargement, Badge, Tableau, Vide,
-  SelecteurPeriode,
+  SelecteurPeriode, BoutonsExport,
 } from "../components/ui";
 import Aide from "../components/Aide";
 import { getJournal } from "../services/db";
 import { dateHeure, fcfa, aujourdhui } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import type { AuditEntry, PeriodKey } from "../types";
 
@@ -145,8 +145,8 @@ export default function Journal() {
 
   const sensibles = entrees.filter((e) => ACTIONS_SENSIBLES.has(e.action));
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "journal-eden",
       ["Date et heure", "Auteur", "Opération", "Domaine", "Référence", "Établissement", "Détail", "Montant"],
       entrees.map((e) => [
@@ -177,9 +177,11 @@ export default function Journal() {
           <option value="">Toutes les opérations</option>
           {ACTIONS_TRACEES.map((v) => <option key={v} value={v}>{LIBELLES_ACTION[v]}</option>)}
         </Liste>
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!entrees.length}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!entrees.length}
+        />
       </PageHeader>
 
       <Erreur message={erreur} />

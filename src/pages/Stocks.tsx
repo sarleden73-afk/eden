@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Boxes, AlertTriangle, PackageX, Search, ClipboardCheck, History, FileDown, ArrowRight,
+  Boxes, AlertTriangle, PackageX, Search, ClipboardCheck, History, ArrowRight,
 } from "lucide-react";
-import Layout from "../components/Layout";
 import {
-  PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide, StatCard,
+  Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
+  Badge, Modale, Tableau, Vide, StatCard, BoutonsExport,
 } from "../components/ui";
 import { getProduits, getMouvementsStock, ajusterStock } from "../services/db";
 import { fcfa, quantite as fmtQuantite, dateHeure } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import type { Product, StockMovement } from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
@@ -18,8 +17,13 @@ import Aide from "../components/Aide";
 
 type Onglet = "etat" | "mouvements";
 
-/** §5.5 Gestion des stocks : état, alertes, inventaire et historique. */
-export default function Stocks() {
+/**
+ * §5.5 État du stock, alertes, inventaire et mouvements.
+ *
+ * Panneau de l'écran Approvisionnement, et non page autonome : le stock ne se
+ * lit pas indépendamment de ce qui le remplit. Voir Approvisionnement.tsx.
+ */
+export function PanneauStock() {
   const { peut } = useAuth();
   const { selection, libelle, nomDe } = useEtablissement();
   const peutAjuster = peut("admin", "responsable");
@@ -69,8 +73,8 @@ export default function Stocks() {
     });
   }, [produits, recherche, filtreAlerte]);
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "stocks-eden",
       ["Article", "Catégorie", "Pôle", "Quantité", "Unité", "Seuil d'alerte", "Prix d'achat", "Valeur du stock", "État"],
       affiches.map((p) => [
@@ -81,12 +85,14 @@ export default function Stocks() {
     );
 
   return (
-    <Layout>
-      <PageHeader titre="Stocks" sousTitre={`${libelle} — état, alertes, inventaire et mouvements`}>
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!affiches.length}>
-          PDF
-        </Bouton>
-      </PageHeader>
+    <>
+      <div className="flex justify-end mb-4">
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!affiches.length}
+        />
+      </div>
 
       <Erreur message={erreur} />
 
@@ -254,7 +260,7 @@ export default function Stocks() {
         onFermer={() => setAAjuster(null)}
         onSucces={() => { setAAjuster(null); void recharger(); }}
       />
-    </Layout>
+    </>
   );
 }
 

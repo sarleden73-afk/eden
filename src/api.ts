@@ -2142,11 +2142,21 @@ export function createApiApp() {
     const { data, error } = await q.limit(300);
     if (error) throw new Error(error.message);
 
+    // Numéro de reçu des commandes déjà encaissées : c'est ce qui permet de
+    // retrouver la vente correspondante depuis la liste, sans avoir à la
+    // chercher par le montant et la date.
+    const idsVentes = (data ?? []).map((c) => c.sale_id).filter(Boolean) as number[];
+    const { data: ventes } = idsVentes.length
+      ? await supabase.from("sales").select("id, numero_recu").in("id", idsVentes)
+      : { data: [] as { id: number; numero_recu: string }[] };
+    const recuParVente = new Map((ventes ?? []).map((v) => [v.id, v.numero_recu]));
+
     const noms = await nomsEmployes();
     res.json(
       (data ?? []).map((c) => ({
         ...toCamelCase(c),
         technicienNom: c.technicien_id ? noms.get(c.technicien_id) ?? null : null,
+        numeroRecu: c.sale_id ? recuParVente.get(c.sale_id) ?? null : null,
       }))
     );
   }));
@@ -2191,6 +2201,86 @@ export function createApiApp() {
     res.status(201).json(toCamelCase(commande));
   }));
 
+  /**
+   * Statuts qui closent une commande et déclenchent l'encaissement.
+   *
+   * Les deux, et non le seul « livré » : certaines prestations sont réglées
+   * quand le travail est fini, d'autres à la remise. Prendre le premier des
+   * deux atteints évite qu'une commande passée directement à « livré » saute
+   * l'encaissement, et le verrou `sale_id` empêche de compter deux fois celle
+   * qui traverse les deux étapes.
+   */
+  const STATUTS_CLOTURE = ["termine", "livre"];
+
+  /**
+   * Transforme une commande close en vente.
+   *
+   * Une commande terminée est de l'argent gagné : tant qu'elle ne devenait pas
+   * une vente, son montant n'entrait ni au chiffre d'affaires, ni en caisse, ni
+   * en comptabilité, et il fallait la ressaisir à la main — ce que personne ne
+   * fait. La vente est donc produite ici, une fois, au moment où la commande
+   * se clôt.
+   *
+   * Le montant retenu est le total, pas le reste dû : l'acompte encaissé à la
+   * prise de commande n'a jamais été enregistré ailleurs. Le compter ici remet
+   * la recette entière au bon endroit, à la date de clôture.
+   */
+  async function venteDepuisCommande(commande: Record<string, unknown>, profil: Profil) {
+    const etablissement = commande.establishment_id as number;
+    const total = Number(commande.montant_total);
+    const session = await sessionOuverte(etablissement);
+    const moyen = (commande.payment_method as string) ?? "especes";
+
+    const vente = await insertionAvecNumero<{ id: number; numero_recu: string }>(
+      "EMS", "sales", "numero_recu",
+      (numero) => ({
+        numero_recu: numero,
+        establishment_id: etablissement,
+        session_id: session?.id ?? null,
+        customer_id: commande.customer_id ?? null,
+        vendeur_id: profil.id,
+        payment_method: moyen,
+        sous_total: total,
+        remise: 0,
+        total,
+        // Une prestation n'a pas de prix d'achat au catalogue : son coût est
+        // le temps passé, que cette application ne suit pas. Laisser zéro est
+        // honnête ; inventer un coût fausserait la marge.
+        cout_total: 0,
+      })
+    );
+
+    const { error: errLigne } = await supabase.from("sale_items").insert({
+      sale_id: vente.id,
+      product_id: null,
+      pack_id: null,
+      libelle: `${commande.type_prestation} — ${commande.numero}`,
+      quantite: Number(commande.quantite) || 1,
+      prix_unitaire: Number(commande.prix_unitaire) || total,
+      prix_achat_unitaire: 0,
+      montant: total,
+    });
+    if (errLigne) {
+      // Une vente sans ligne est une incohérence pire qu'une vente absente.
+      await supabase.from("sales").delete().eq("id", vente.id);
+      throw new Error(errLigne.message);
+    }
+
+    if (session) {
+      await supabase.from("cash_movements").insert({
+        session_id: session.id,
+        type: "vente",
+        montant: total,
+        motif: `Commande ${commande.numero}`,
+        payment_method: moyen,
+        sale_id: vente.id,
+        created_by: profil.id,
+      });
+    }
+
+    return vente;
+  }
+
   api.patch("/orders/:id", requireRole(...TOUS), route(async (req, res) => {
     const { data: avant } = await supabase
       .from("orders").select("*").eq("id", req.params.id).single();
@@ -2200,22 +2290,67 @@ export function createApiApp() {
     }
 
     const { establishmentId: _fige, ...corps } = req.body as Record<string, unknown>;
-    // Le total et le reste se recalculent, ils ne se saisissent pas.
+    // Le total, le reste et le lien vers la vente se calculent, ils ne se
+    // saisissent pas : les laisser passer permettrait de délier une commande
+    // de sa vente depuis le navigateur.
     if (corps.quantite != null || corps.prixUnitaire != null) {
       const qte = Number(corps.quantite ?? avant.quantite);
       const pu = Number(corps.prixUnitaire ?? avant.prix_unitaire);
       corps.montantTotal = qte * pu;
     }
     delete corps.reste;
+    delete corps.saleId;
+
+    const statutVise = corps.statut as string | undefined;
+
+    // Annuler une commande déjà encaissée laisserait une vente sans origine :
+    // la recette resterait au chiffre d'affaires alors que la prestation est
+    // abandonnée. On renvoie vers l'annulation de la vente, qui elle exige un
+    // motif et restitue proprement.
+    if (statutVise === "annule" && avant.sale_id) {
+      return res.status(409).json({
+        error: "Cette commande a déjà été encaissée. Annulez d'abord la vente correspondante dans l'écran Ventes.",
+      });
+    }
+
+    // Modifier le montant d'une commande déjà encaissée ferait diverger la
+    // commande et sa vente : le même travail afficherait deux prix.
+    if (corps.montantTotal != null && avant.sale_id
+        && Number(corps.montantTotal) !== Number(avant.montant_total)) {
+      return res.status(409).json({
+        error: "Cette commande a déjà été encaissée : son montant ne peut plus changer.",
+      });
+    }
 
     const { data, error } = await supabase
       .from("orders").update(toSnakeCase(corps)).eq("id", req.params.id).select().single();
     if (error) throw new Error(error.message);
 
+    // La vente est produite après la mise à jour du statut : si elle échoue,
+    // la commande reste close et l'erreur est visible, plutôt que d'annuler
+    // silencieusement un changement que l'utilisateur croit fait.
+    let vente: { id: number; numero_recu: string } | null = null;
+    if (statutVise && STATUTS_CLOTURE.includes(statutVise) && !avant.sale_id) {
+      vente = await venteDepuisCommande(data, req.profil!);
+      const { data: liee } = await supabase
+        .from("orders").update({ sale_id: vente.id }).eq("id", req.params.id).select().single();
+      if (liee) Object.assign(data, liee);
+
+      journaliser(req.profil!, "encaissement_commande", "orders", req.params.id, {
+        motif: `Vente ${vente.numero_recu} générée à la clôture`,
+        apres: { saleId: vente.id, numeroRecu: vente.numero_recu },
+      });
+    }
+
     journaliser(req.profil!, "modification_commande", "orders", req.params.id, {
       avant, apres: data, motif: req.body.motif,
     });
-    res.json(toCamelCase(data));
+
+    res.json({
+      ...toCamelCase(data),
+      /** Renseigné seulement au moment où la vente vient d'être créée. */
+      venteGeneree: vente ? { id: vente.id, numeroRecu: vente.numero_recu } : null,
+    });
   }));
 
   // -------------------------------------------------------------------------

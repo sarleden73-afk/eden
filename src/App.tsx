@@ -12,8 +12,6 @@ import Caisse from "./pages/Caisse";
 import Ventes from "./pages/Ventes";
 import Commandes from "./pages/Commandes";
 import Catalogue from "./pages/Catalogue";
-import Stocks from "./pages/Stocks";
-import Achats from "./pages/Achats";
 import Depenses from "./pages/Depenses";
 import Rapports from "./pages/Rapports";
 import Comptabilite from "./pages/Comptabilite";
@@ -24,6 +22,7 @@ import Parametres from "./pages/Parametres";
 import Pointage from "./pages/Pointage";
 import Presence from "./pages/Presence";
 import Corbeille from "./pages/Corbeille";
+import Approvisionnement from "./pages/Approvisionnement";
 
 function Ecran() {
   return (
@@ -95,9 +94,10 @@ export default function App() {
             <Route path="/commandes"      element={<Protege ecran="commandes"><Commandes /></Protege>} />
             <Route path="/pointage"       element={<Protege ecran="pointage"><Pointage /></Protege>} />
             <Route path="/catalogue"      element={<Protege ecran="catalogue"><Catalogue /></Protege>} />
-            <Route path="/stocks"         element={<Protege ecran="stocks"><Stocks /></Protege>} />
-
-            <Route path="/achats"         element={<Protege ecran="achats"><Achats /></Protege>} />
+            <Route path="/approvisionnement" element={<Protege ecran="stocks"><Approvisionnement /></Protege>} />
+            {/* Anciennes adresses : les raccourcis et onglets ouverts continuent de marcher. */}
+            <Route path="/stocks" element={<Navigate to="/approvisionnement" replace />} />
+            <Route path="/achats" element={<Navigate to="/approvisionnement" replace />} />
             <Route path="/depenses"       element={<Protege ecran="depenses"><Depenses /></Protege>} />
             <Route path="/rapports"       element={<Protege ecran="rapports"><Rapports /></Protege>} />
             <Route path="/journal"        element={<Protege ecran="journal"><Journal /></Protege>} />

@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  UserCog, Plus, Pencil, KeyRound, ShieldCheck, FileDown, Copy, Check, Mail, Hash, ScanFace,
+  UserCog, Plus, Pencil, KeyRound, ShieldCheck, Copy, Check, Mail, Hash, ScanFace,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Erreur, Chargement,
-  Badge, Modale, Tableau, Vide,
+  Badge, Modale, Tableau, Vide, BoutonsExport,
 } from "../components/ui";
 import {
   getUtilisateurs, creerUtilisateur, modifierUtilisateur,
   reinitialiserMotDePasse, definirCodePin, getEtablissements,
 } from "../services/db";
 import { dateCourte } from "../lib/format";
-import { exporterListePDF } from "../lib/export";
+import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import { useAuth } from "../contexts/AuthContext";
 import Camera from "../components/Camera";
@@ -115,8 +115,8 @@ export default function Personnel() {
 
   useEffect(() => { void recharger(); }, [recharger]);
 
-  const exporter = () =>
-    exporterListePDF(
+  const exporter = (format: "pdf" | "csv") =>
+    (format === "pdf" ? exporterListePDF : exporterListeCSV)(
       "personnel-eden",
       ["Nom complet", "Fonction", "Rôle", "Établissement", "Connexion", "Entrée", "État"],
       utilisateurs.map((u) => [
@@ -130,9 +130,11 @@ export default function Personnel() {
   return (
     <Layout>
       <PageHeader titre="Personnel" sousTitre="Comptes, rôles et autorisations">
-        <Bouton variante="secondaire" icone={FileDown} onClick={exporter} disabled={!utilisateurs.length}>
-          PDF
-        </Bouton>
+        <BoutonsExport
+          onPdf={() => exporter("pdf")}
+          onCsv={() => exporter("csv")}
+          desactive={!utilisateurs.length}
+        />
         <Bouton icone={Plus} onClick={() => setEdite("nouveau")}>Nouveau compte</Bouton>
       </PageHeader>
 

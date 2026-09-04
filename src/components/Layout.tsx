@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard, ShoppingCart, Wallet, ReceiptText, Package, Boxes, Truck,
+  LayoutDashboard, ShoppingCart, Wallet, ReceiptText, Package, Boxes,
   CreditCard, Palette, UserCog, BarChart3, Calculator, History,
   Settings, LogOut, Menu, X, Sprout, AlertTriangle, Building2,
   PanelLeftClose, PanelLeftOpen, ScanFace, CalendarCheck, Trash2,
@@ -37,8 +37,7 @@ const NAVIGATION: Entree[] = [
   { nom: "Pointage", href: "/pointage", icone: ScanFace, ecran: "pointage", groupe: "Exploitation" },
 
   { nom: "Catalogue", href: "/catalogue", icone: Package, ecran: "catalogue", groupe: "Gestion" },
-  { nom: "Stocks", href: "/stocks", icone: Boxes, ecran: "stocks", groupe: "Gestion" },
-  { nom: "Achats", href: "/achats", icone: Truck, ecran: "achats", groupe: "Gestion" },
+  { nom: "Approvisionnement", href: "/approvisionnement", icone: Boxes, ecran: "stocks", groupe: "Gestion" },
   { nom: "Dépenses", href: "/depenses", icone: CreditCard, ecran: "depenses", groupe: "Gestion" },
 
   { nom: "Rapports", href: "/rapports", icone: BarChart3, ecran: "rapports", groupe: "Direction" },
@@ -183,7 +182,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         )}
                       />
                       {!reduit && <span className="truncate">{e.nom}</span>}
-                      {e.href === "/stocks" && nbAlertes > 0 && (
+                      {e.href === "/approvisionnement" && nbAlertes > 0 && (
                         reduit ? (
                           <span className="absolute ml-6 -mt-4 h-1.5 w-1.5 rounded-full bg-amber-400" />
                         ) : (

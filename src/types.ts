@@ -347,6 +347,11 @@ export interface Order {
   statut: OrderStatus;
   technicienId: string | null;
   technicienNom?: string;
+  paymentMethod: PaymentMethod;
+  /** Vente produite à la clôture. Non nul = commande déjà encaissée. */
+  saleId: number | null;
+  /** Numéro de reçu de cette vente, pour la retrouver depuis la liste. */
+  numeroRecu?: string | null;
   createdAt: string;
 }
 

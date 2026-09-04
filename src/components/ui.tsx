@@ -1,5 +1,7 @@
 import React from "react";
-import { LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers, ChevronRight } from "lucide-react";
+import {
+  LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers, ChevronRight, FileDown, Sheet,
+} from "lucide-react";
 import { cn } from "../lib/utils";
 import type { PeriodKey } from "../types";
 import { fcfa } from "../lib/format";
@@ -255,6 +257,47 @@ export function StatCard({
     >
       {contenu}
     </button>
+  );
+}
+
+/**
+ * Les deux formats d'export, côte à côte.
+ *
+ * Un seul composant plutôt que deux boutons posés à la main sur chaque écran :
+ * c'est ce qui garantit qu'aucun tableau ne se retrouve exportable en PDF mais
+ * pas en CSV. Les deux partent des mêmes données, calculées au même instant.
+ */
+export function BoutonsExport({
+  onPdf, onCsv, desactive,
+}: { onPdf: () => void; onCsv: () => void; desactive?: boolean }) {
+  return (
+    <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden bg-white">
+      <button
+        onClick={onPdf}
+        disabled={desactive}
+        title="Exporter en PDF — pour imprimer ou transmettre"
+        className={cn(
+          "inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700",
+          "hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-white transition-colors"
+        )}
+      >
+        <FileDown className="h-4 w-4" />
+        PDF
+      </button>
+      <span className="w-px bg-gray-300" aria-hidden />
+      <button
+        onClick={onCsv}
+        disabled={desactive}
+        title="Exporter en CSV — pour rouvrir dans un tableur"
+        className={cn(
+          "inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700",
+          "hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-white transition-colors"
+        )}
+      >
+        <Sheet className="h-4 w-4" />
+        CSV
+      </button>
+    </div>
   );
 }
 

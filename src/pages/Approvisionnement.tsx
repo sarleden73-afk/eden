@@ -9,6 +9,7 @@ import { getProduits, getAchats } from "../services/db";
 import { fcfa } from "../lib/format";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
+import type { Product } from "../types";
 import { useAuth } from "../contexts/AuthContext";
 
 /**
@@ -34,14 +35,18 @@ export default function Approvisionnement() {
   const { selection, libelle } = useEtablissement();
   const { profil } = useAuth();
 
-  // Réunir deux écrans ne doit pas réunir leurs droits : le personnel de
-  // terrain consulte le stock sans voir les achats, leurs prix ni les dettes
-  // fournisseurs. L'API refuse de toute façon ces routes, mais afficher un
-  // onglet qui ne renvoie que des refus serait une promesse en l'air.
+  // Le personnel de terrain voit les deux volets : celui qui constate une
+  // rupture est celui qui commande. Le droit reste retirable personne par
+  // personne depuis la grille « Écrans autorisés » de l'écran Personnel, et
+  // c'est ce droit — pas le rôle — que l'API vérifie.
   const voitLesAchats = !!profil?.ecrans.includes("achats");
   const [onglet, setOnglet] = useState<Onglet>("stock");
   const ongletsVisibles = ONGLETS.filter((o) => o.cle !== "achats" || voitLesAchats);
   const actif = onglet === "achats" && !voitLesAchats ? "stock" : onglet;
+
+  // Article passé du volet Stock au volet Achats. C'est le fil qui relie les
+  // deux : on voit une rupture, on clique, la commande s'ouvre déjà remplie.
+  const [aCommander, setACommander] = useState<Product | null>(null);
 
   // Les compteurs du haut ne dépendent pas de l'onglet ouvert : le stock
   // manquant reste visible pendant qu'on saisit un achat, et le restant dû
@@ -155,7 +160,16 @@ export default function Approvisionnement() {
         </div>
       )}
 
-      {actif === "stock" ? <PanneauStock /> : <PanneauAchats />}
+      {actif === "stock" ? (
+        <PanneauStock
+          onCommander={voitLesAchats ? (p) => { setACommander(p); setOnglet("achats"); } : undefined}
+        />
+      ) : (
+        <PanneauAchats
+          produitACommander={aCommander}
+          onCommandePrise={() => { setACommander(null); void recharger(); }}
+        />
+      )}
     </Layout>
   );
 }

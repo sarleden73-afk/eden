@@ -271,6 +271,19 @@ export const getAlertesStock = (etab?: SelectionEtablissement) =>
 export const ajusterStock = (corps: { productId: number; quantiteReelle: number; motif: string }) =>
   post<{ ok: boolean; ecart: number }>("/stock/adjust", corps);
 
+/** Dernier achat de chaque article, indexé par identifiant d'article. */
+export interface DernierAchat {
+  numero: string;
+  date: string;
+  /** Ce qui reste dû sur cet achat, 0 s'il est soldé. */
+  restantDu: number;
+  fournisseur: string | null;
+  quantite: number;
+  prixUnitaire: number;
+}
+export const getDerniersAchats = (etab?: SelectionEtablissement) =>
+  get<Record<string, DernierAchat>>(`/stock/derniers-achats${requete(etab)}`);
+
 // --- Achats (§5.6) ---------------------------------------------------------
 
 export const getAchats = (

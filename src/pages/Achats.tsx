@@ -29,7 +29,13 @@ type Onglet = "achats" | "fournisseurs";
  * stock et fixe le prix d'achat qui sert au calcul de la marge. Séparer les
  * deux écrans obligeait à faire ce lien de tête.
  */
-export function PanneauAchats() {
+export function PanneauAchats({
+  produitACommander, onCommandePrise,
+}: {
+  /** Article venu du volet Stock, à pré-remplir dans un nouvel achat. */
+  produitACommander?: Product | null;
+  onCommandePrise?: () => void;
+} = {}) {
   const { selection, libelle, pourEcriture } = useEtablissement();
   const [onglet, setOnglet] = useState<Onglet>("achats");
   const [periode, setPeriode] = useState<PeriodKey>("mois");
@@ -63,6 +69,16 @@ export function PanneauAchats() {
   }, [periode, debut, fin, selection]);
 
   useEffect(() => { void recharger(); }, [recharger]);
+
+  // Un article arrive du volet Stock : on ouvre directement la saisie d'achat
+  // avec sa ligne déjà posée. Cliquer « Commander » devant une rupture puis
+  // devoir rechercher le même article serait absurde.
+  useEffect(() => {
+    if (produitACommander) {
+      setOnglet("achats");
+      setNouvelAchat(true);
+    }
+  }, [produitACommander]);
 
   const total = achats.reduce((s, a) => s + a.montantTotal, 0);
   const restant = achats.reduce((s, a) => s + a.montantRestant, 0);
@@ -224,9 +240,10 @@ export function PanneauAchats() {
       )}
 
       <ModaleAchat
-        ouverte={nouvelAchat} fournisseurs={fournisseurs} produits={produits}
-        onFermer={() => setNouvelAchat(false)}
-        onSucces={() => { setNouvelAchat(false); void recharger(); }}
+        ouverte={nouvelAchat}
+        produitInitial={produitACommander ?? null} fournisseurs={fournisseurs} produits={produits}
+        onFermer={() => { setNouvelAchat(false); onCommandePrise?.(); }}
+        onSucces={() => { setNouvelAchat(false); onCommandePrise?.(); void recharger(); }}
       />
       <ModaleDetailAchat achat={detail} onFermer={() => setDetail(null)} />
       <ModaleReglement
@@ -252,9 +269,11 @@ interface LigneAchat {
 }
 
 function ModaleAchat({
-  ouverte, fournisseurs, produits, onFermer, onSucces,
+  ouverte, fournisseurs, produits, produitInitial, onFermer, onSucces,
 }: {
   ouverte: boolean; fournisseurs: Supplier[]; produits: Product[];
+  /** Article venu d'une rupture de stock, posé d'emblée sur la commande. */
+  produitInitial?: Product | null;
   onFermer: () => void; onSucces: () => void;
 }) {
   const { pourEcriture, libelle } = useEtablissement();
@@ -273,8 +292,21 @@ function ModaleAchat({
     if (!ouverte) return;
     setSupplierId(""); setDateAchat(aujourdhui());
     setPaiement("especes"); setMontantPaye(""); setJustificatif(""); setNotes("");
-    setLignes([]); setRecherche(""); setErreur(null);
-  }, [ouverte]);
+    setRecherche(""); setErreur(null);
+    // La quantité proposée ramène l'article juste au-dessus de son seuil : ce
+    // n'est qu'un point de départ, mais c'est celui qu'on aurait calculé.
+    setLignes(
+      produitInitial
+        ? [{
+            cle: Date.now(),
+            productId: produitInitial.id,
+            libelle: produitInitial.nom,
+            quantite: String(Math.max(1, Math.ceil(produitInitial.seuilAlerte - produitInitial.quantite) || 1)),
+            prixUnitaire: String(produitInitial.prixAchat || ""),
+          }]
+        : []
+    );
+  }, [ouverte, produitInitial]);
 
   const total = lignes.reduce(
     (s, l) => s + (Number(l.quantite) || 0) * (Number(l.prixUnitaire) || 0), 0

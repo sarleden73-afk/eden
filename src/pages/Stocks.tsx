@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Boxes, AlertTriangle, PackageX, Search, ClipboardCheck, History, ArrowRight,
+  Boxes, AlertTriangle, PackageX, Search, ClipboardCheck, History, ArrowRight, Truck,
 } from "lucide-react";
 import {
   Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
   Badge, Modale, Tableau, Vide, StatCard, BoutonsExport,
 } from "../components/ui";
-import { getProduits, getMouvementsStock, ajusterStock } from "../services/db";
-import { fcfa, quantite as fmtQuantite, dateHeure } from "../lib/format";
+import {
+  getProduits, getMouvementsStock, ajusterStock, getDerniersAchats, type DernierAchat,
+} from "../services/db";
+import { fcfa, quantite as fmtQuantite, dateHeure, dateCourte } from "../lib/format";
 import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
 import type { Product, StockMovement } from "../types";
@@ -23,7 +25,7 @@ type Onglet = "etat" | "mouvements";
  * Panneau de l'écran Approvisionnement, et non page autonome : le stock ne se
  * lit pas indépendamment de ce qui le remplit. Voir Approvisionnement.tsx.
  */
-export function PanneauStock() {
+export function PanneauStock({ onCommander }: { onCommander?: (p: Product) => void }) {
   const { peut } = useAuth();
   const { selection, libelle, nomDe } = useEtablissement();
   const peutAjuster = peut("admin", "responsable");
@@ -38,14 +40,22 @@ export function PanneauStock() {
 
   const [filtreAlerte, setFiltreAlerte] = useState<"" | "rupture" | "bas">("");
   const [aAjuster, setAAjuster] = useState<Product | null>(null);
+  const [derniersAchats, setDerniersAchats] = useState<Record<string, DernierAchat>>({});
 
   const recharger = useCallback(async () => {
     setChargement(true);
     try {
-      const [p, m] = await Promise.all([getProduits(selection), getMouvementsStock(selection)]);
+      const [p, m, achats] = await Promise.all([
+        getProduits(selection),
+        getMouvementsStock(selection),
+        // L'échec ne doit pas vider l'écran : sans les derniers achats, le
+        // stock reste lisible, il est seulement moins renseigné.
+        getDerniersAchats(selection).catch(() => ({})),
+      ]);
       // Seuls les articles réellement suivis ont leur place ici.
       setProduits(p.filter((x) => x.gereStock));
       setMouvements(m);
+      setDerniersAchats(achats);
       setErreur(null);
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Chargement impossible.");
@@ -175,11 +185,12 @@ export function PanneauStock() {
               />
             ) : (
               <Tableau
-                entetes={["Article", "Pôle", " Quantité", " Seuil", " Valeur", "État", ""]}
+                entetes={["Article", "Pôle", " Quantité", " Seuil", " Valeur", "Dernier achat", "État", ""]}
               >
                 {affiches.map((p) => {
                   const rupture = p.quantite <= 0;
                   const bas = !rupture && p.quantite <= p.seuilAlerte;
+                  const dernier = derniersAchats[p.id];
                   return (
                     <tr key={p.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3">
@@ -197,21 +208,53 @@ export function PanneauStock() {
                       <td className="px-4 py-3 text-right tabulaire text-gray-600 whitespace-nowrap">
                         {p.prixAchat > 0 ? fcfa(p.quantite * p.prixAchat) : <span className="text-gray-400">—</span>}
                       </td>
+                      {/* Le lien avec les achats : devant une rupture, savoir
+                          quand on a commandé pour la dernière fois évite de
+                          repasser commande d'une marchandise déjà en route. */}
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {dernier ? (
+                          <>
+                            <div className="text-gray-700">{dateCourte(dernier.date)}</div>
+                            <div className="text-xs text-gray-500">
+                              {dernier.fournisseur ?? "Sans fournisseur"} · {fcfa(dernier.prixUnitaire)}
+                            </div>
+                            {dernier.restantDu > 0 && (
+                              <div className="text-xs text-red-700">
+                                Reste dû {fcfa(dernier.restantDu)}
+                              </div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-gray-400 text-xs">Jamais acheté ici</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {rupture ? <Badge ton="danger">Rupture</Badge>
                           : bas ? <Badge ton="alerte">Stock bas</Badge>
                           : <Badge ton="succes">Normal</Badge>}
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        {peutAjuster && (
-                          <button
-                            onClick={() => setAAjuster(p)}
-                            className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                            title="Ajuster après inventaire"
-                          >
-                            <ClipboardCheck className="h-4 w-4" />
-                          </button>
-                        )}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          {onCommander && (rupture || bas) && (
+                            <button
+                              onClick={() => onCommander(p)}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+                              title="Commander cet article chez un fournisseur"
+                            >
+                              <Truck className="h-4 w-4" />
+                              Commander
+                            </button>
+                          )}
+                          {peutAjuster && (
+                            <button
+                              onClick={() => setAAjuster(p)}
+                              className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                              title="Ajuster après inventaire"
+                            >
+                              <ClipboardCheck className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

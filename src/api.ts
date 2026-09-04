@@ -110,9 +110,18 @@ export const ECRANS = [
 ] as const;
 type EcranCle = (typeof ECRANS)[number];
 
+/**
+ * Base du personnel de terrain.
+ *
+ * « achats » y figure sur décision de la direction : le stock et les achats
+ * forment un seul écran, et celui qui constate une rupture est aussi celui qui
+ * passe la commande au fournisseur. Cela lui donne accès aux prix d'achat et
+ * aux dettes fournisseurs — c'est assumé, et retirable personne par personne
+ * depuis la grille « Écrans autorisés » de l'écran Personnel.
+ */
 const ECRANS_TERRAIN: EcranCle[] = [
   "tableau-de-bord", "vente", "caisse", "ventes", "commandes", "pointage",
-  "catalogue", "stocks", "depenses",
+  "catalogue", "stocks", "achats", "depenses",
 ];
 
 const ECRANS_PAR_ROLE: Record<UserRole, EcranCle[]> = {
@@ -1220,14 +1229,14 @@ export function createApiApp() {
     res.json(toCamelCaseArray(data ?? []));
   }));
 
-  api.post("/suppliers", requireRole(...VALIDENT), route(async (req, res) => {
+  api.post("/suppliers", requireRole(...TOUS), route(async (req, res) => {
     const { data, error } = await supabase
       .from("suppliers").insert(toSnakeCase(req.body)).select().single();
     if (error) throw new Error(error.message);
     res.status(201).json(toCamelCase(data));
   }));
 
-  api.patch("/suppliers/:id", requireRole(...VALIDENT), route(async (req, res) => {
+  api.patch("/suppliers/:id", requireRole(...TOUS), route(async (req, res) => {
     const { data, error } = await supabase
       .from("suppliers").update(toSnakeCase(req.body)).eq("id", req.params.id).select().single();
     if (error) throw new Error(error.message);
@@ -1886,11 +1895,68 @@ export function createApiApp() {
     res.json({ ok: true, ecart });
   }));
 
+  /**
+   * Dernier achat de chaque article.
+   *
+   * C'est ce qui relie concrètement les deux moitiés de l'écran
+   * Approvisionnement : devant une rupture, la question n'est pas seulement
+   * « combien en reste-t-il » mais « quand en a-t-on commandé pour la dernière
+   * fois, à qui, et à quel prix ». Sans cette information, on repasse commande
+   * sans savoir si la précédente est en route.
+   *
+   * Une seule requête pour tout le catalogue : interroger article par article
+   * ferait cent appels sur un écran qui s'ouvre à chaque rupture.
+   */
+  api.get("/stock/derniers-achats", requireRole(...TOUS), route(async (req, res) => {
+    const portee = etablissementDemande(req.profil!, req.query.establishmentId);
+    if (portee.erreur) return res.status(400).json({ error: portee.erreur });
+
+    let qAchats = supabase.from("purchases")
+      .select("id, numero, date_achat, supplier_id, montant_restant")
+      .order("date_achat", { ascending: false }).limit(400);
+    qAchats = filtrerEtablissement(qAchats, portee.id);
+    const { data: achats, error } = await qAchats;
+    if (error) throw new Error(error.message);
+    if (!achats?.length) return res.json({});
+
+    const [{ data: lignes }, { data: fournisseurs }] = await Promise.all([
+      supabase.from("purchase_items")
+        .select("purchase_id, product_id, quantite, prix_unitaire")
+        .in("purchase_id", achats.map((a) => a.id)),
+      supabase.from("suppliers").select("id, nom"),
+    ]);
+
+    const achatParId = new Map(achats.map((a) => [a.id, a]));
+    const nomFournisseur = new Map((fournisseurs ?? []).map((f) => [f.id, f.nom]));
+
+    // Les achats arrivent du plus récent au plus ancien : la première ligne
+    // rencontrée pour un article est donc la bonne, et on ne l'écrase plus.
+    const dernier: Record<string, unknown> = {};
+    for (const a of achats) {
+      for (const l of (lignes ?? []).filter((x) => x.purchase_id === a.id)) {
+        if (!l.product_id || dernier[l.product_id]) continue;
+        const achat = achatParId.get(a.id)!;
+        dernier[l.product_id] = {
+          numero: achat.numero,
+          date: achat.date_achat,
+          // Ce qu'on doit encore sur cet achat : devant une rupture, savoir
+          // qu'on doit déjà de l'argent au fournisseur change la conversation.
+          restantDu: Number(achat.montant_restant),
+          fournisseur: achat.supplier_id ? nomFournisseur.get(achat.supplier_id) ?? null : null,
+          quantite: Number(l.quantite),
+          prixUnitaire: Number(l.prix_unitaire),
+        };
+      }
+    }
+
+    res.json(dernier);
+  }));
+
   // -------------------------------------------------------------------------
   // §5.6 Achats
   // -------------------------------------------------------------------------
 
-  api.get("/purchases", requireRole(...VALIDENT), route(async (req, res) => {
+  api.get("/purchases", requireRole(...TOUS), route(async (req, res) => {
     const { debutJour, finJour } = bornesPeriode(req.query as Record<string, unknown>);
     const portee = etablissementDemande(req.profil!, req.query.establishmentId);
     if (portee.erreur) return res.status(400).json({ error: portee.erreur });
@@ -1919,7 +1985,7 @@ export function createApiApp() {
     );
   }));
 
-  api.post("/purchases", requireRole(...VALIDENT), route(async (req, res) => {
+  api.post("/purchases", requireRole(...TOUS), route(async (req, res) => {
     const { supplierId, dateAchat, montantPaye, paymentMethod, justificatif, notes, items } = req.body;
 
     const cible = etablissementEcriture(req.profil!, req.body.establishmentId);
@@ -1986,7 +2052,7 @@ export function createApiApp() {
     res.status(201).json({ id: achat.id, numero: achat.numero, montantTotal });
   }));
 
-  api.post("/purchases/:id/pay", requireRole(...VALIDENT), route(async (req, res) => {
+  api.post("/purchases/:id/pay", requireRole(...TOUS), route(async (req, res) => {
     const { data: achat, error: errAchat } = await supabase
       .from("purchases").select("*").eq("id", req.params.id).single();
     if (errAchat) throw new Error(errAchat.message);
@@ -2011,7 +2077,7 @@ export function createApiApp() {
     res.json(toCamelCase(data));
   }));
 
-  api.get("/purchases/:id", requireRole(...VALIDENT), route(async (req, res) => {
+  api.get("/purchases/:id", requireRole(...TOUS), route(async (req, res) => {
     const [{ data: achat }, { data: lignes }] = await Promise.all([
       supabase.from("purchases").select("*, suppliers(nom)").eq("id", req.params.id).single(),
       supabase.from("purchase_items").select("*").eq("purchase_id", req.params.id).order("id"),

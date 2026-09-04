@@ -15,7 +15,9 @@ interface AuthContextType {
   erreurProfil: string | null;
   connexion: (email: string, motDePasse: string) => Promise<void>;
   /** Connexion du personnel : identifiant de profil + code à 6 chiffres. */
-  connexionAgent: (profileId: string, pin: string) => Promise<ResultatConnexion>;
+  connexionAgent: (
+    profileId: string, pin: string, secours?: { raison: string }
+  ) => Promise<ResultatConnexion>;
   /** Connexion du personnel par le visage : vaut pointage du jour. */
   connexionVisage: (establishmentId: number | null, empreinte: number[]) => Promise<ResultatConnexion>;
   deconnexion: () => Promise<void>;
@@ -137,8 +139,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return r;
   };
 
-  const connexionAgent = (profileId: string, pin: string) =>
-    connexionParCode(profileId, pin).then(ouvrirSession);
+  const connexionAgent = (profileId: string, pin: string, secours?: { raison: string }) =>
+    connexionParCode(profileId, pin, secours).then(ouvrirSession);
 
   const connexionVisage = (establishmentId: number | null, empreinte: number[]) =>
     connexionParVisage(establishmentId, empreinte).then(ouvrirSession);

@@ -20,7 +20,12 @@ import type {
 // ============================================================================
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    /** Code métier renvoyé par le serveur, quand la réponse en porte un. */
+    readonly code?: string
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -43,7 +48,7 @@ async function appel<T>(chemin: string, options: RequestInit = {}): Promise<T> {
     // Le corps d'erreur peut être vide (502, coupure réseau) : on retombe alors
     // sur un message générique plutôt que de lever une erreur de parsing.
     const corps = await reponse.json().catch(() => ({}));
-    throw new ApiError(corps.error || `Erreur ${reponse.status}`, reponse.status);
+    throw new ApiError(corps.error || `Erreur ${reponse.status}`, reponse.status, corps.code);
   }
 
   if (reponse.status === 204) return undefined as T;
@@ -97,7 +102,7 @@ async function appelPublic<T>(chemin: string, options: RequestInit = {}): Promis
   });
   if (!reponse.ok) {
     const corps = await reponse.json().catch(() => ({}));
-    throw new ApiError(corps.error || `Erreur ${reponse.status}`, reponse.status);
+    throw new ApiError(corps.error || `Erreur ${reponse.status}`, reponse.status, corps.code);
   }
   return reponse.json();
 }
@@ -121,10 +126,20 @@ export interface ResultatConnexion {
   pointage?: { jour: string; arriveA: string; methode: string; verifie: boolean } | null;
 }
 
-export const connexionParCode = (profileId: string, pin: string) =>
+/**
+ * Connexion au code.
+ *
+ * Refusée avec `pointage_requis` s'il s'agit de la première connexion du jour
+ * et qu'un visage est enregistré : l'arrivée doit alors passer par la caméra.
+ * `secours` force le passage quand la caméra est hors d'usage — l'arrivée est
+ * enregistrée comme non vérifiée, avec le motif.
+ */
+export const connexionParCode = (
+  profileId: string, pin: string, secours?: { raison: string }
+) =>
   appelPublic<ResultatConnexion>("/pin", {
     method: "POST",
-    body: JSON.stringify({ profileId, pin }),
+    body: JSON.stringify({ profileId, pin, secours }),
   });
 
 /** Identification par le visage : l'empreinte est comparée côté serveur. */

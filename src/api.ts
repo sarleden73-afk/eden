@@ -354,13 +354,17 @@ async function enregistrerPointage(
   profileId: string,
   establishmentId: number,
   methode: "visage" | "code",
-  verifie: boolean
+  verifie: boolean,
+  note?: string | null
 ): Promise<{ jour: string; arriveA: string; methode: string; verifie: boolean } | null> {
   const jour = jourLocal(new Date());
 
   const { data, error } = await supabase
     .from("pointages")
-    .insert({ profile_id: profileId, establishment_id: establishmentId, jour, methode, verifie })
+    .insert({
+      profile_id: profileId, establishment_id: establishmentId,
+      jour, methode, verifie, note: note ?? null,
+    })
     .select().single();
 
   // Conflit d'unicité = la personne avait déjà pointé aujourd'hui.
@@ -372,6 +376,14 @@ async function enregistrerPointage(
     methode: data.methode,
     verifie: data.verifie,
   };
+}
+
+/** La personne a-t-elle déjà une arrivée enregistrée aujourd'hui ? */
+async function aPointeAujourdHui(profileId: string): Promise<boolean> {
+  const { count } = await supabase
+    .from("pointages").select("id", { count: "exact", head: true })
+    .eq("profile_id", profileId).eq("jour", jourLocal(new Date()));
+  return (count ?? 0) > 0;
 }
 
 // --- Traçabilité (§5.10) ----------------------------------------------------
@@ -673,7 +685,8 @@ export function createApiApp() {
     if (blocage) return res.status(429).json({ error: blocage });
 
     const { data: profil } = await supabase
-      .from("profiles").select("email, actif, mode_connexion, establishment_id")
+      .from("profiles")
+      .select("email, actif, mode_connexion, establishment_id, visage_empreinte")
       .eq("id", profileId).maybeSingle();
 
     // Message identique dans tous les cas d'échec : distinguer « compte
@@ -696,13 +709,44 @@ export function createApiApp() {
 
     reinitialiserTentatives(String(profileId));
 
-    // Le code n'est le mode normal qu'à partir de la deuxième connexion de la
-    // journée. S'il n'y a pas encore de pointage, c'est que la reconnaissance
-    // du visage a échoué : la personne travaille, mais l'arrivée est marquée
-    // non vérifiée et ressortira dans le bilan de présence.
-    const pointage = await enregistrerPointage(
-      String(profileId), profil.establishment_id as number, "code", false
-    );
+    /*
+     * Le code ouvre les connexions de la journée, pas la première.
+     *
+     * L'arrivée est ce qui atteste la ponctualité : si le code suffisait à
+     * l'enregistrer, chacun déclarerait sa propre heure d'arrivée et le suivi
+     * de présence ne vaudrait plus rien. La première identification du jour
+     * passe donc par la caméra.
+     *
+     * La vérification n'a lieu qu'une fois le code reconnu : répondre « vous
+     * n'avez pas encore pointé » à qui n'a pas le bon code reviendrait à
+     * annoncer publiquement qui est déjà au travail.
+     *
+     * Reste le cas où la caméra ne peut pas servir — appareil sans objectif,
+     * autorisation refusée, panne. Refuser l'accès enfermerait quelqu'un
+     * dehors de son propre lieu de travail : la porte de secours existe, mais
+     * elle est explicite, elle exige un motif, et elle marque l'arrivée comme
+     * non vérifiée pour que la direction la voie.
+     */
+    const dejaPointe = await aPointeAujourdHui(String(profileId));
+    const secours = req.body.secours as { raison?: string } | undefined;
+
+    if (!dejaPointe && profil.visage_empreinte && !secours) {
+      return res.status(409).json({
+        code: "pointage_requis",
+        error: "Première connexion de la journée : votre arrivée doit être enregistrée par la caméra.",
+      });
+    }
+
+    const pointage = dejaPointe
+      ? null
+      : await enregistrerPointage(
+          String(profileId), profil.establishment_id as number, "code", false,
+          secours?.raison
+            ? `Secours : ${String(secours.raison).slice(0, 200)}`
+            : profil.visage_empreinte
+              ? "Entrée au code, sans reconnaissance"
+              : "Aucun visage enregistré pour ce compte"
+        );
 
     res.json({
       accessToken: data.session.access_token,

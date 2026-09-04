@@ -1,12 +1,13 @@
 import { useEffect, useState, type FormEvent, type ButtonHTMLAttributes } from "react";
 import {
   Sprout, LogIn, ShieldCheck, ArrowLeft, Delete, User, ScanFace, KeyRound, Check,
+  CameraOff, Clock,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { Bouton, Champ, Saisie, Erreur } from "../components/ui";
 import Camera from "../components/Camera";
 import {
-  getEtablissementsConnexion, getPersonnelConnexion, getMarque,
+  getEtablissementsConnexion, getPersonnelConnexion, getMarque, ApiError,
 } from "../services/db";
 import { cn } from "../lib/utils";
 import { heure } from "../lib/format";
@@ -22,6 +23,11 @@ type Panneau = "personnel" | "administration";
  * présente à la caméra : la première identification de la journée vaut
  * pointage. Les connexions suivantes se font au code — il serait absurde de
  * refaire une photo à chaque retour derrière le comptoir.
+ *
+ * Cette règle n'est pas qu'une préférence d'affichage : le serveur refuse le
+ * code tant que l'arrivée du jour n'est pas enregistrée. Sans cela, chacun
+ * déclarerait sa propre heure d'arrivée et le suivi de ponctualité ne vaudrait
+ * rien. L'écran se contente donc de suivre ce que le serveur répond.
  *
  * Le propriétaire et les responsables passent par l'espace administrateur,
  * avec adresse et mot de passe : ils atteignent la comptabilité et les comptes,
@@ -91,6 +97,14 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
   const [envoi, setEnvoi] = useState(false);
   const [pointage, setPointage] = useState<{ arriveA: string } | null>(null);
 
+  // Le serveur a renvoyé « pointage_requis » : le code est bon, mais l'arrivée
+  // du jour n'est pas encore enregistrée. On garde le code sous la main pour
+  // ouvrir la session dès que le visage aura été reconnu, ou par la porte de
+  // secours si la caméra est hors d'usage.
+  const [codeEnAttente, setCodeEnAttente] = useState<string | null>(null);
+  const [secours, setSecours] = useState(false);
+  const [raisonSecours, setRaisonSecours] = useState("");
+
   useEffect(() => {
     let annule = false;
     Promise.all([getEtablissementsConnexion(), getPersonnelConnexion()])
@@ -111,11 +125,18 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
     : agents;
   const agentChoisi = agents.find((a) => a.id === agentId) ?? null;
 
-  const choisir = (a: AgentConnexion) => {
-    setAgentId(a.id);
+  const reinitialiser = () => {
     setCode("");
     setEchecs(0);
     setErreur(null);
+    setCodeEnAttente(null);
+    setSecours(false);
+    setRaisonSecours("");
+  };
+
+  const choisir = (a: AgentConnexion) => {
+    setAgentId(a.id);
+    reinitialiser();
     // Sans visage enregistré, ouvrir la caméra ne mènerait nulle part.
     setEtape(a.visageEnregistre ? "visage" : "code");
   };
@@ -123,9 +144,7 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
   const revenir = () => {
     setAgentId("");
     setEtape("choix");
-    setCode("");
-    setEchecs(0);
-    setErreur(null);
+    reinitialiser();
   };
 
   const parVisage = async (empreinte: number[]) => {
@@ -138,27 +157,49 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
     } catch (e) {
       const restants = echecs + 1;
       setEchecs(restants);
-      setErreur(
-        restants >= ESSAIS_AVANT_REPLI
-          ? "Reconnaissance impossible. Utilisez votre code : votre arrivée sera enregistrée, mais signalée comme non vérifiée."
-          : e instanceof Error ? e.message : "Visage non reconnu."
-      );
-      if (restants >= ESSAIS_AVANT_REPLI) setEtape("code");
+
+      if (restants < ESSAIS_AVANT_REPLI) {
+        setErreur(e instanceof Error ? e.message : "Visage non reconnu.");
+        return;
+      }
+
+      // Après plusieurs échecs, deux situations. Le code a déjà été saisi et
+      // renvoyé ici : la porte de secours apparaît juste en dessous. Sinon on
+      // demande le code — le serveur le refusera et ramènera à la caméra, ce
+      // qui ouvrira cette même porte, sans jamais laisser le code se
+      // substituer discrètement au visage.
+      if (codeEnAttente) {
+        setErreur("Reconnaissance impossible après plusieurs essais. Replacez-vous face à la caméra, dans un meilleur éclairage.");
+      } else {
+        setErreur("Reconnaissance impossible. Saisissez votre code : la suite vous sera indiquée.");
+        setEtape("code");
+      }
     } finally {
       setEnvoi(false);
     }
   };
 
-  const parCode = async () => {
-    if (!agentId || code.length !== LONGUEUR_CODE || envoi) return;
+  const parCode = async (raison?: string) => {
+    const chiffres = raison ? codeEnAttente : code;
+    if (!agentId || chiffres?.length !== LONGUEUR_CODE || envoi) return;
+
     setEnvoi(true);
     setErreur(null);
     try {
-      const r = await connexionAgent(agentId, code);
+      const r = await connexionAgent(agentId, chiffres, raison ? { raison } : undefined);
       if (r.pointage) setPointage({ arriveA: r.pointage.arriveA });
     } catch (e) {
-      setErreur(e instanceof Error ? e.message : "Connexion impossible.");
-      setCode("");
+      // Le code est bon, mais l'arrivée du jour n'est pas enregistrée : on
+      // renvoie vers la caméra sans faire ressaisir le code.
+      if (e instanceof ApiError && e.code === "pointage_requis") {
+        setCodeEnAttente(chiffres);
+        setCode("");
+        setEtape("visage");
+        setErreur(null);
+      } else {
+        setErreur(e instanceof Error ? e.message : "Connexion impossible.");
+        setCode("");
+      }
     } finally {
       setEnvoi(false);
     }
@@ -170,6 +211,15 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
     if (code.length === LONGUEUR_CODE && agentId) void parCode();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
+
+  const ouvrirParSecours = async () => {
+    const raison = raisonSecours.trim();
+    if (raison.length < 3) {
+      setErreur("Indiquez en quelques mots pourquoi la caméra ne peut pas servir.");
+      return;
+    }
+    await parCode(raison);
+  };
 
   return (
     <div className="bg-white rounded-xl p-5 shadow-xl">
@@ -263,18 +313,66 @@ function PanneauPersonnel({ onAdministration }: { onAdministration: () => void }
 
           {etape === "visage" ? (
             <>
+              {codeEnAttente && (
+                <div className="flex items-start gap-2.5 p-3 mb-4 bg-indigo-50 border border-indigo-200 rounded-lg">
+                  <Clock className="h-5 w-5 text-indigo-600 shrink-0 mt-px" />
+                  <p className="text-sm text-indigo-950">
+                    Votre code est bon, mais c'est votre <strong>première connexion du jour</strong> :
+                    l'arrivée s'enregistre par la caméra. Vous n'aurez pas à ressaisir votre code.
+                  </p>
+                </div>
+              )}
+
               <Camera
                 automatique
                 onLecture={({ empreinte }) => parVisage(empreinte)}
                 message="Regardez la caméra. Votre arrivée sera enregistrée automatiquement."
               />
-              <button
-                onClick={() => { setEtape("code"); setErreur(null); }}
-                className="mt-4 w-full flex items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 hover:text-indigo-700"
-              >
-                <KeyRound className="h-4 w-4" />
-                Déjà pointé aujourd'hui — utiliser mon code
-              </button>
+
+              {/* Porte de secours : seulement après plusieurs échecs, et jamais
+                  sans motif. Une issue trop facile redeviendrait le chemin
+                  normal, et l'heure d'arrivée ne vaudrait plus rien. */}
+              {codeEnAttente && echecs >= ESSAIS_AVANT_REPLI ? (
+                secours ? (
+                  <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg space-y-2.5">
+                    <p className="text-sm text-amber-900">
+                      Votre arrivée sera enregistrée comme <strong>non vérifiée</strong> et signalée
+                      à la direction avec ce motif.
+                    </p>
+                    <Saisie
+                      value={raisonSecours}
+                      onChange={(e) => setRaisonSecours(e.target.value)}
+                      placeholder="Caméra en panne, objectif cassé…"
+                      maxLength={120}
+                      autoFocus
+                    />
+                    <Bouton
+                      variante="secondaire"
+                      chargement={envoi}
+                      onClick={ouvrirParSecours}
+                      className="w-full"
+                    >
+                      Entrer sans reconnaissance
+                    </Bouton>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setSecours(true); setErreur(null); }}
+                    className="mt-4 w-full flex items-center justify-center gap-2 py-2 text-sm font-medium text-amber-700 hover:text-amber-800"
+                  >
+                    <CameraOff className="h-4 w-4" />
+                    La caméra ne fonctionne pas
+                  </button>
+                )
+              ) : !codeEnAttente ? (
+                <button
+                  onClick={() => { setEtape("code"); setErreur(null); }}
+                  className="mt-4 w-full flex items-center justify-center gap-2 py-2 text-sm font-medium text-gray-500 hover:text-indigo-700"
+                >
+                  <KeyRound className="h-4 w-4" />
+                  Déjà pointé aujourd'hui — utiliser mon code
+                </button>
+              ) : null}
             </>
           ) : (
             <>

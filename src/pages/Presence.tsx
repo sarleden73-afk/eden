@@ -79,9 +79,11 @@ export default function Presence() {
           pour quelqu'un d'autre.
         </p>
         <p>
-          Une arrivée <strong>non vérifiée</strong> est une entrée faite au code parce que le visage
-          n'a pas été reconnu. Ce n'est pas une faute en soi — mauvais éclairage, caméra occupée —
-          mais un compteur qui grimpe pour une seule personne mérite qu'on regarde.
+          Le code seul ne permet pas d'ouvrir la journée : tant que l'arrivée n'est pas enregistrée,
+          le serveur renvoie la personne à la caméra. Une arrivée <strong>non vérifiée</strong> est
+          donc une entrée forcée parce que la caméra ne pouvait pas servir, et le motif saisi
+          apparaît à côté. Ce n'est pas une faute en soi — panne, objectif cassé — mais un compteur
+          qui grimpe pour une seule personne mérite qu'on regarde.
         </p>
       </Aide>
 
@@ -149,9 +151,16 @@ export default function Presence() {
                   <td className="px-4 py-3 text-gray-900">{p.nom}</td>
                   <td className="px-4 py-3 text-gray-600">{p.etablissementNom}</td>
                   <td className="px-4 py-3">
-                    {p.verifie
-                      ? <Badge ton="succes">Visage reconnu</Badge>
-                      : <Badge ton="alerte">Code — non vérifiée</Badge>}
+                    {p.verifie ? (
+                      <Badge ton="succes">Visage reconnu</Badge>
+                    ) : (
+                      <>
+                        <Badge ton="alerte">Non vérifiée</Badge>
+                        {p.note && (
+                          <span className="block text-xs text-amber-800 mt-1">{p.note}</span>
+                        )}
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}

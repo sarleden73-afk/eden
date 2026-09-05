@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  Search, Plus, Minus, Trash2, ShoppingCart, Check, Printer, Package,
+  Search, Plus, Minus, Trash2, ShoppingCart, Check, Printer, Package, FileText,
   ChevronUp, Wallet,
 } from "lucide-react";
 import Layout from "../components/Layout";
@@ -11,6 +11,7 @@ import {
 } from "../components/ui";
 import { getProduits, getPacks, getCaisseCourante, enregistrerVente } from "../services/db";
 import { fcfa, nombre, dateHeure } from "../lib/format";
+import { genererDocument, entrepriseCourante } from "../lib/facture";
 import { cn } from "../lib/utils";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import { PAYMENT_LABELS, type Product, type Pack, type PaymentMethod } from "../types";
@@ -551,9 +552,43 @@ function PanierVente(props: {
 // ---------------------------------------------------------------------------
 
 function ModaleTicket({ ticket, onFermer }: { ticket: TicketEmis | null; onFermer: () => void }) {
+  const [editionFacture, setEditionFacture] = useState(false);
+
   if (!ticket) return null;
 
   const sousTotal = ticket.lignes.reduce((s, l) => s + l.prixUnitaire * l.quantite, 0);
+
+  /**
+   * Facture A4, à distinguer du ticket ci-dessus.
+   *
+   * Le ticket suffit au client qui repart avec son achat ; il ne suffit pas à
+   * celui qui doit justifier une dépense. Les deux existent donc, et c'est le
+   * client qui choisit.
+   */
+  const editerFacture = async () => {
+    setEditionFacture(true);
+    try {
+      const entreprise = await entrepriseCourante();
+      await genererDocument({
+        nature: "facture",
+        numero: ticket.numeroRecu,
+        entreprise,
+        etablissement: ticket.etablissement,
+        dateOperation: ticket.date,
+        lignes: ticket.lignes.map((l) => ({
+          libelle: l.libelle,
+          quantite: l.quantite,
+          prixUnitaire: l.prixUnitaire,
+          montant: l.prixUnitaire * l.quantite,
+        })),
+        remise: ticket.remise,
+        moyenPaiement: PAYMENT_LABELS[ticket.paiement],
+        note: "Merci de votre confiance.",
+      });
+    } finally {
+      setEditionFacture(false);
+    }
+  };
 
   return (
     <Modale ouverte titre="Vente enregistrée" onFermer={onFermer}>
@@ -604,11 +639,20 @@ function ModaleTicket({ ticket, onFermer }: { ticket: TicketEmis | null; onFerme
         <p className="mt-4 text-center text-xs text-gray-500">Merci de votre confiance.</p>
       </div>
 
-      <div className="flex gap-2 mt-5 sans-impression">
+      <div className="flex flex-wrap gap-2 mt-5 sans-impression">
         <Bouton variante="secondaire" icone={Printer} onClick={() => window.print()} className="flex-1">
-          Imprimer
+          Ticket
         </Bouton>
-        <Bouton onClick={onFermer} className="flex-1">Vente suivante</Bouton>
+        <Bouton
+          variante="secondaire"
+          icone={FileText}
+          chargement={editionFacture}
+          onClick={editerFacture}
+          className="flex-1"
+        >
+          Facture
+        </Bouton>
+        <Bouton onClick={onFermer} className="w-full">Vente suivante</Bouton>
       </div>
     </Modale>
   );

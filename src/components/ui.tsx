@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers, ChevronRight, FileDown, Sheet,
+  LucideIcon, X, Loader2, Inbox, AlertTriangle, Layers, ChevronRight, FileDown, Sheet, MapPin,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { PeriodKey } from "../types";
@@ -168,12 +168,37 @@ export function Vide({
   );
 }
 
-export function Erreur({ message }: { message: string | null }) {
+/**
+ * Message d'erreur.
+ *
+ * Les refus de périmètre reçoivent un traitement à part : ce n'est pas une
+ * panne mais une règle, et la personne devant l'écran a besoin de savoir quoi
+ * faire — se rapprocher, ou autoriser la localisation — plutôt que de voir un
+ * bandeau rouge qui ressemble à un bug.
+ */
+export function Erreur({ message, code }: { message: string | null; code?: string }) {
   if (!message) return null;
+
+  const perimetre = code === "hors_perimetre" || code === "position_requise";
+  const Icone = perimetre ? MapPin : AlertTriangle;
+
   return (
-    <div className="flex items-start gap-2.5 p-3 mb-4 bg-red-50 border border-red-200 rounded-lg">
-      <AlertTriangle className="h-5 w-5 text-red-600 shrink-0 mt-px" />
-      <p className="text-sm text-red-800">{message}</p>
+    <div className={cn(
+      "flex items-start gap-2.5 p-3 mb-4 border rounded-lg",
+      perimetre ? "bg-amber-50 border-amber-200" : "bg-red-50 border-red-200"
+    )}>
+      <Icone className={cn(
+        "h-5 w-5 shrink-0 mt-px", perimetre ? "text-amber-600" : "text-red-600"
+      )} />
+      <div className={cn("text-sm", perimetre ? "text-amber-900" : "text-red-800")}>
+        <p>{message}</p>
+        {code === "position_requise" && (
+          <p className="mt-1 text-xs">
+            Touchez l'icône de cadenas dans la barre d'adresse du navigateur, puis autorisez
+            la localisation pour ce site.
+          </p>
+        )}
+      </div>
     </div>
   );
 }

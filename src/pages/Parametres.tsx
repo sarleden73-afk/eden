@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Save, Building2, Wallet, Check, Info, Palette, Sun, Moon, Laptop, Upload, Trash2,
+  MapPin, Crosshair, Package,
 } from "lucide-react";
 import Layout from "../components/Layout";
 import {
@@ -9,7 +10,10 @@ import {
 import { getParametres, enregistrerParametres } from "../services/db";
 import { cn } from "../lib/utils";
 import { useTheme, ACCENTS, MODES } from "../contexts/ThemeContext";
-import type { EntrepriseSettings, CaisseSettings } from "../types";
+import type {
+  EntrepriseSettings, CaisseSettings, LocalisationSettings, CommandeSettings,
+} from "../types";
+import { obtenirPosition, oublierPosition, distanceMetres } from "../lib/position";
 
 const ENTREPRISE_VIDE: EntrepriseSettings = {
   nom: "EDEN MULTI-SERVICES",
@@ -17,6 +21,77 @@ const ENTREPRISE_VIDE: EntrepriseSettings = {
 };
 
 const CAISSE_DEFAUT: CaisseSettings = { fondsInitialParDefaut: 0, inactiviteMinutes: 30 };
+
+/**
+ * Périmètre par défaut : la papeterie de Kintélé, trente mètres.
+ *
+ * La tolérance de soixante mètres n'élargit pas le périmètre — elle crédite
+ * l'imprécision que l'appareil annonce lui-même. En intérieur, un téléphone
+ * donne couramment quarante mètres d'incertitude : sans ce crédit, un agent
+ * debout derrière le comptoir serait refusé. Le crédit est plafonné, sinon une
+ * position déduite de l'adresse IP ouvrirait le périmètre au pays entier.
+ */
+const LOCALISATION_DEFAUT: LocalisationSettings = {
+  latitude: -4.12436,
+  longitude: 15.35937,
+  rayonMetres: 30,
+  toleranceMetres: 60,
+  actif: false,
+};
+
+const COMMANDE_DEFAUT: CommandeSettings = { joursDeGarde: 10 };
+
+/**
+ * Retire le fond uni d'un logo, en place.
+ *
+ * Le logo de l'entreprise est posé sur un aplat bleu ; sur une facture, cet
+ * aplat forme un rectangle qui ne ressemble à rien. On part des quatre coins,
+ * qui sont du fond par construction, et on efface de proche en proche tout ce
+ * qui leur ressemble. Un simple « efface tous les pixels bleus » mangerait le
+ * bleu à l'intérieur du dessin ; la propagation depuis les bords, non.
+ *
+ * Le seuil est volontairement tolérant : les aplats sont rarement parfaitement
+ * uniformes après compression JPEG.
+ */
+function retirerLeFond(ctx: CanvasRenderingContext2D, largeur: number, hauteur: number) {
+  const image = ctx.getImageData(0, 0, largeur, hauteur);
+  const px = image.data;
+  const SEUIL = 60;
+
+  const indice = (x: number, y: number) => (y * largeur + x) * 4;
+  const coin = indice(0, 0);
+  const fond = [px[coin], px[coin + 1], px[coin + 2]];
+
+  const proche = (i: number) =>
+    Math.abs(px[i] - fond[0]) + Math.abs(px[i + 1] - fond[1]) + Math.abs(px[i + 2] - fond[2]) < SEUIL * 3;
+
+  // Parcours en largeur depuis les quatre bords. Une pile explicite plutôt
+  // qu'une récursion : sur une image de 384 pixels de côté, la récursion
+  // dépasse la pile d'appels du navigateur.
+  const vus = new Uint8Array(largeur * hauteur);
+  const pile: number[] = [];
+  const empiler = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= largeur || y >= hauteur) return;
+    const p = y * largeur + x;
+    if (vus[p]) return;
+    vus[p] = 1;
+    pile.push(x, y);
+  };
+
+  for (let x = 0; x < largeur; x++) { empiler(x, 0); empiler(x, hauteur - 1); }
+  for (let y = 0; y < hauteur; y++) { empiler(0, y); empiler(largeur - 1, y); }
+
+  while (pile.length) {
+    const y = pile.pop()!;
+    const x = pile.pop()!;
+    const i = indice(x, y);
+    if (!proche(i)) continue;
+    px[i + 3] = 0;
+    empiler(x + 1, y); empiler(x - 1, y); empiler(x, y + 1); empiler(x, y - 1);
+  }
+
+  ctx.putImageData(image, 0, 0);
+}
 
 /**
  * §6 Informations restant à fournir.
@@ -32,6 +107,10 @@ export default function Parametres() {
   const [envoi, setEnvoi] = useState(false);
   const [enregistre, setEnregistre] = useState(false);
   const [erreurLogo, setErreurLogo] = useState<string | null>(null);
+  const [detourerLeFond, setDetourerLeFond] = useState(false);
+  const [localisation, setLocalisation] = useState<LocalisationSettings>(LOCALISATION_DEFAUT);
+  const [commande, setCommande] = useState<CommandeSettings>(COMMANDE_DEFAUT);
+  const [positionRelevee, setPositionRelevee] = useState<string | null>(null);
   const { accent, mode, choisirAccent, choisirMode } = useTheme();
 
   useEffect(() => {
@@ -39,6 +118,8 @@ export default function Parametres() {
       .then((p) => {
         setEntreprise({ ...ENTREPRISE_VIDE, ...(p.entreprise ?? {}) });
         setCaisse({ ...CAISSE_DEFAUT, ...(p.caisse ?? {}) });
+        setLocalisation({ ...LOCALISATION_DEFAUT, ...(p.localisation ?? {}) });
+        setCommande({ ...COMMANDE_DEFAUT, ...(p.commande ?? {}) });
         setErreur(null);
       })
       .catch((e) => setErreur(e.message))
@@ -54,7 +135,7 @@ export default function Parametres() {
    * suffisant pour un logo affiché à 56 pixels, et une trentaine de kilo-octets
    * au lieu de plusieurs milliers.
    */
-  const chargerLogo = async (fichier: File) => {
+  const chargerLogo = async (fichier: File, detourer = false) => {
     setErreurLogo(null);
     if (!fichier.type.startsWith("image/")) {
       setErreurLogo("Choisissez un fichier image.");
@@ -80,7 +161,9 @@ export default function Parametres() {
         img.src = dataUrl;
       });
 
-      const MAX = 256;
+      // 384 plutôt que 256 : le logo sert aussi de vignette sur les factures
+      // imprimées, où 256 pixels tirés sur 34 mm se voient.
+      const MAX = 384;
       const echelle = Math.min(1, MAX / Math.max(image.width, image.height));
       const largeur = Math.round(image.width * echelle);
       const hauteur = Math.round(image.height * echelle);
@@ -91,12 +174,19 @@ export default function Parametres() {
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Redimensionnement impossible sur cet appareil.");
 
-      // Fond blanc : un PNG transparent réencodé en JPEG virerait au noir.
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, largeur, hauteur);
-      ctx.drawImage(image, 0, 0, largeur, hauteur);
-
-      setEntreprise((e) => ({ ...e, logoUrl: canvas.toDataURL("image/jpeg", 0.85) }));
+      if (detourer) {
+        ctx.drawImage(image, 0, 0, largeur, hauteur);
+        retirerLeFond(ctx, largeur, hauteur);
+        // PNG obligatoire : le JPEG ne sait pas être transparent, et le fond
+        // qu'on vient de retirer reviendrait en noir.
+        setEntreprise((e) => ({ ...e, logoUrl: canvas.toDataURL("image/png") }));
+      } else {
+        // Fond blanc : un PNG transparent réencodé en JPEG virerait au noir.
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, largeur, hauteur);
+        ctx.drawImage(image, 0, 0, largeur, hauteur);
+        setEntreprise((e) => ({ ...e, logoUrl: canvas.toDataURL("image/jpeg", 0.85) }));
+      }
     } catch (e) {
       setErreurLogo(e instanceof Error ? e.message : "Image illisible.");
     }
@@ -109,6 +199,8 @@ export default function Parametres() {
       await Promise.all([
         enregistrerParametres("entreprise", entreprise),
         enregistrerParametres("caisse", caisse),
+        enregistrerParametres("localisation", localisation),
+        enregistrerParametres("commande", commande),
       ]);
       setEnregistre(true);
       window.setTimeout(() => setEnregistre(false), 2500);
@@ -254,7 +346,7 @@ export default function Parametres() {
             <div className="sm:col-span-2">
               <Champ
                 label="Logo"
-                aide="Image carrée de préférence. Elle est réduite à 256 pixels avant d'être enregistrée."
+                aide="Image carrée de préférence. Elle est réduite avant d'être enregistrée, et sert aussi d'en-tête aux factures."
               >
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-sm font-medium text-gray-700 cursor-pointer hover:bg-gray-50">
@@ -267,7 +359,7 @@ export default function Parametres() {
                       onChange={(e) => {
                         const fichier = e.target.files?.[0];
                         e.target.value = "";
-                        if (fichier) void chargerLogo(fichier);
+                        if (fichier) void chargerLogo(fichier, detourerLeFond);
                       }}
                     />
                   </label>
@@ -281,6 +373,26 @@ export default function Parametres() {
                     </Bouton>
                   )}
                 </div>
+
+                {/* Le logo de la papeterie est posé sur un aplat bleu : sur une
+                    facture, cet aplat forme un rectangle qui ne ressemble à
+                    rien. Le détourage part des bords, il ne mange donc pas les
+                    couleurs présentes à l'intérieur du dessin. */}
+                <label className="mt-3 flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={detourerLeFond}
+                    onChange={(e) => setDetourerLeFond(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600"
+                  />
+                  <span className="text-sm text-gray-700">
+                    Retirer le fond uni
+                    <span className="block text-xs text-gray-500">
+                      À cocher <strong>avant</strong> de choisir le fichier, pour un logo posé sur un
+                      aplat de couleur. Le fond devient transparent sur les factures.
+                    </span>
+                  </span>
+                </label>
               </Champ>
               {erreurLogo && <p className="mt-1.5 text-xs text-red-600">{erreurLogo}</p>}
             </div>
@@ -328,6 +440,135 @@ export default function Parametres() {
                 onChange={(e) =>
                   setCaisse({ ...caisse, inactiviteMinutes: Number(e.target.value) || 30 })
                 }
+              />
+            </Champ>
+          </div>
+        </Card>
+
+        {/* --- Périmètre de travail --- */}
+        <Card className="p-6">
+          <div className="flex items-center gap-2 mb-1">
+            <MapPin className="h-5 w-5 text-indigo-600" />
+            <h2 className="font-semibold text-gray-900">Périmètre de travail</h2>
+          </div>
+          <p className="text-sm text-gray-500 mb-5">
+            Limite les opérations du personnel de terrain à l'établissement. L'encadrement n'est
+            jamais bloqué : corriger une écriture le soir fait partie de son travail.
+          </p>
+
+          <label className="flex items-start gap-2.5 cursor-pointer mb-5">
+            <input
+              type="checkbox"
+              checked={localisation.actif}
+              onChange={(e) => setLocalisation({ ...localisation, actif: e.target.checked })}
+              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600"
+            />
+            <span className="text-sm text-gray-900">
+              Exiger la présence sur place
+              <span className="block text-xs text-gray-500">
+                Le caissier et le technicien ne peuvent alors ni pointer, ni enregistrer une vente,
+                une dépense ou un achat depuis l'extérieur. La consultation, elle, reste libre.
+              </span>
+            </span>
+          </label>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Champ label="Latitude">
+              <Saisie
+                type="number" step="0.00001" value={localisation.latitude}
+                onChange={(e) => setLocalisation({ ...localisation, latitude: Number(e.target.value) })}
+              />
+            </Champ>
+            <Champ label="Longitude">
+              <Saisie
+                type="number" step="0.00001" value={localisation.longitude}
+                onChange={(e) => setLocalisation({ ...localisation, longitude: Number(e.target.value) })}
+              />
+            </Champ>
+            <Champ label="Rayon autorisé (mètres)" aide="30 m couvre la boutique et son entrée.">
+              <Saisie
+                type="number" min={10} max={2000} value={localisation.rayonMetres}
+                onChange={(e) => setLocalisation({ ...localisation, rayonMetres: Number(e.target.value) || 30 })}
+              />
+            </Champ>
+            <Champ
+              label="Tolérance GPS (mètres)"
+              aide="Marge accordée à l'imprécision annoncée par l'appareil. En intérieur, un téléphone se trompe couramment de 40 m."
+            >
+              <Saisie
+                type="number" min={0} max={300} value={localisation.toleranceMetres}
+                onChange={(e) => setLocalisation({ ...localisation, toleranceMetres: Number(e.target.value) || 0 })}
+              />
+            </Champ>
+          </div>
+
+          {/* Relever le point depuis la boutique vaut mieux que recopier des
+              coordonnées : ce qui compte, c'est ce que voit l'appareil sur
+              place, pas ce qu'affiche une carte. */}
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Bouton
+              variante="secondaire"
+              icone={Crosshair}
+              onClick={async () => {
+                setPositionRelevee("Relevé en cours…");
+                oublierPosition();
+                const p = await obtenirPosition();
+                if (!p) {
+                  setPositionRelevee("Position indisponible : autorisez la localisation dans le navigateur.");
+                  return;
+                }
+                const ecart = distanceMetres(
+                  p.latitude, p.longitude, localisation.latitude, localisation.longitude
+                );
+                setLocalisation((l) => ({ ...l, latitude: p.latitude, longitude: p.longitude }));
+                setPositionRelevee(
+                  `Point relevé à ${Math.round(p.precision)} m près, `
+                  + `à ${Math.round(ecart)} m du point précédent.`
+                );
+              }}
+            >
+              Relever ma position actuelle
+            </Bouton>
+            <a
+              href={`https://www.google.com/maps?q=${localisation.latitude},${localisation.longitude}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-indigo-600 hover:underline"
+            >
+              Vérifier le point sur une carte
+            </a>
+          </div>
+          {positionRelevee && (
+            <p className="mt-2 text-sm text-gray-600">{positionRelevee}</p>
+          )}
+
+          <div className="flex items-start gap-2.5 mt-5 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <Info className="h-5 w-5 text-amber-600 shrink-0 mt-px" />
+            <p className="text-sm text-amber-900">
+              Un téléphone qui ne capte pas le GPS se rabat sur le Wi-Fi, voire sur l'adresse
+              Internet — parfois à plusieurs kilomètres. Si l'équipe se retrouve bloquée sans
+              raison, décochez la case ci-dessus : l'effet est immédiat, sans redémarrage.
+            </p>
+          </div>
+        </Card>
+
+        {/* --- Commandes --- */}
+        <Card className="p-6">
+          <div className="flex items-center gap-2 mb-1">
+            <Package className="h-5 w-5 text-indigo-600" />
+            <h2 className="font-semibold text-gray-900">Commandes</h2>
+          </div>
+          <p className="text-sm text-gray-500 mb-5">
+            Ce délai est imprimé sur chaque bon de commande, sous le total.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Champ
+              label="Jours de garde après la date de retrait"
+              aide="Passé ce délai, la conservation n'est plus garantie et l'acompte reste acquis."
+            >
+              <Saisie
+                type="number" min={1} max={180} value={commande.joursDeGarde}
+                onChange={(e) => setCommande({ joursDeGarde: Number(e.target.value) || 10 })}
               />
             </Champ>
           </div>

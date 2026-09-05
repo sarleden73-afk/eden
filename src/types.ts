@@ -400,6 +400,29 @@ export interface CaisseSettings {
   inactiviteMinutes: number;
 }
 
+/**
+ * Périmètre de travail.
+ *
+ * Le personnel de terrain ne peut enregistrer une opération, ni pointer son
+ * arrivée, que depuis l'établissement. L'encadrement n'est pas concerné : il
+ * lui arrive légitimement de corriger une écriture le soir.
+ */
+export interface LocalisationSettings {
+  latitude: number;
+  longitude: number;
+  /** Distance tolérée autour du point, en mètres. */
+  rayonMetres: number;
+  /** Marge accordée à l'imprécision annoncée par l'appareil, en mètres. */
+  toleranceMetres: number;
+  actif: boolean;
+}
+
+/** Conditions commerciales imprimées sur les documents. */
+export interface CommandeSettings {
+  /** Jours de garde après la date de retrait prévue. */
+  joursDeGarde: number;
+}
+
 // --- Tableau de bord et rapports (§5.11, §5.12) ----------------------------
 
 /** Chiffres d'un établissement sur la période. */

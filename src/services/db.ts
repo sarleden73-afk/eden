@@ -1,10 +1,12 @@
 import { supabase } from "../lib/supabase";
+import { entetePosition } from "../lib/position";
 import type {
   Profile, Product, Category, Pack, Supplier, Sale, CashSession,
   CashMovement, StockMovement, Purchase, Expense, Order, AuditEntry,
   DashboardStats, ReportData, PeriodKey, EntrepriseSettings, CaisseSettings,
   Establishment, SelectionEtablissement, AgentConnexion, LivreComptable,
   EcranCle, Pointage, BilanPresence, PointageDuJour, GroupeCorbeille,
+  LocalisationSettings, CommandeSettings,
 } from "../types";
 
 // ============================================================================
@@ -35,11 +37,19 @@ async function appel<T>(chemin: string, options: RequestInit = {}): Promise<T> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
 
+  // La position n'est relevée que pour les écritures : c'est sur elles seules
+  // que porte le contrôle de périmètre, et solliciter le GPS à chaque lecture
+  // viderait la batterie d'une tablette de comptoir en une matinée.
+  const position = options.method && options.method !== "GET"
+    ? await entetePosition()
+    : {};
+
   const reponse = await fetch(`/api${chemin}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...position,
       ...options.headers,
     },
   });
@@ -96,9 +106,14 @@ export function parametresPeriode(
 // s'authentifie lui-même auprès de Supabase avant de transmettre la session.
 
 async function appelPublic<T>(chemin: string, options: RequestInit = {}): Promise<T> {
+  // Le pointage et la connexion attestent une présence : la position part avec
+  // eux. Les lectures publiques — marque, établissements, liste du personnel —
+  // n'en ont pas besoin.
+  const position = options.method === "POST" ? await entetePosition() : {};
+
   const reponse = await fetch(`/api/auth${chemin}`, {
     ...options,
-    headers: { "Content-Type": "application/json", ...options.headers },
+    headers: { "Content-Type": "application/json", ...position, ...options.headers },
   });
   if (!reponse.ok) {
     const corps = await reponse.json().catch(() => ({}));
@@ -365,7 +380,12 @@ export const restaurer = (domaine: string, id: string) =>
 // --- Paramètres (§6) -------------------------------------------------------
 
 export const getParametres = () =>
-  get<{ entreprise?: EntrepriseSettings; caisse?: CaisseSettings }>("/settings");
+  get<{
+    entreprise?: EntrepriseSettings;
+    caisse?: CaisseSettings;
+    localisation?: LocalisationSettings;
+    commande?: CommandeSettings;
+  }>("/settings");
 export const enregistrerParametres = (cle: string, valeur: unknown) =>
   put<unknown>(`/settings/${cle}`, valeur);
 

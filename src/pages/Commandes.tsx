@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { Palette, Plus, Pencil, Phone, CalendarClock, AlertCircle } from "lucide-react";
+import {
+  Palette, Plus, Pencil, Phone, CalendarClock, AlertCircle, FileText,
+} from "lucide-react";
 import Layout from "../components/Layout";
 import {
   PageHeader, Card, Bouton, Saisie, Liste, Champ, Zone, Erreur, Chargement,
   Badge, Modale, Tableau, Vide, StatCard, BoutonsExport,
 } from "../components/ui";
-import { getCommandes, creerCommande, modifierCommande, getUtilisateurs } from "../services/db";
+import {
+  getCommandes, creerCommande, modifierCommande, getUtilisateurs, getParametres,
+} from "../services/db";
+import { genererDocument, entrepriseCourante } from "../lib/facture";
 import { fcfa, dateCourte, aujourdhui } from "../lib/format";
 import { exporterListePDF, exporterListeCSV } from "../lib/export";
 import { cn } from "../lib/utils";
-import { ORDER_STATUS_LABELS, type Order, type OrderStatus, type Profile } from "../types";
+import {
+  ORDER_STATUS_LABELS, PAYMENT_LABELS,
+  type Order, type OrderStatus, type Profile,
+} from "../types";
 import { useEtablissement } from "../contexts/EtablissementContext";
 import Aide from "../components/Aide";
 
@@ -30,6 +38,7 @@ export default function Commandes() {
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [edite, setEdite] = useState<Order | "nouveau" | null>(null);
+  const [bonEnCours, setBonEnCours] = useState<number | null>(null);
 
   const recharger = useCallback(async () => {
     setChargement(true);
@@ -54,6 +63,47 @@ export default function Commandes() {
   const enRetard = enCours.filter(
     (c) => c.dateLivraisonPrevue && new Date(c.dateLivraisonPrevue) < new Date(aujourdhui())
   );
+
+  /**
+   * Bon de commande d'une ligne.
+   *
+   * Le client repart avec, et revient avec trois semaines plus tard : c'est la
+   * pièce qui dit ce qui a été commandé, ce qui a été versé, ce qui reste à
+   * payer et jusqu'à quand la commande est gardée.
+   */
+  const editerBon = async (c: Order) => {
+    setBonEnCours(c.id);
+    setErreur(null);
+    try {
+      const [entreprise, parametres] = await Promise.all([
+        entrepriseCourante(),
+        getParametres().catch(() => ({} as Record<string, never>)),
+      ]);
+      await genererDocument({
+        nature: "commande",
+        numero: c.numero,
+        entreprise,
+        etablissement: libelle,
+        dateOperation: c.dateCommande,
+        dateLivraison: c.dateLivraisonPrevue,
+        client: { nom: c.customerNom, telephone: c.customerTelephone },
+        lignes: [{
+          libelle: [c.typePrestation, c.description].filter(Boolean).join(" — "),
+          quantite: c.quantite,
+          prixUnitaire: c.prixUnitaire,
+          montant: c.montantTotal,
+        }],
+        acompte: c.acompte,
+        moyenPaiement: PAYMENT_LABELS[c.paymentMethod],
+        joursDeGarde: parametres.commande?.joursDeGarde ?? 10,
+        vendeur: c.technicienNom ?? null,
+      });
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Édition impossible.");
+    } finally {
+      setBonEnCours(null);
+    }
+  };
 
   const exporter = (format: "pdf" | "csv") =>
     (format === "pdf" ? exporterListePDF : exporterListeCSV)(
@@ -158,14 +208,24 @@ export default function Commandes() {
                       <div className="text-xs text-gray-500 mt-0.5">{c.technicienNom}</div>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => setEdite(c)}
-                      className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
-                      title="Modifier"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </button>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => void editerBon(c)}
+                        disabled={bonEnCours === c.id}
+                        className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-40"
+                        title="Éditer le bon de commande"
+                      >
+                        <FileText className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setEdite(c)}
+                        className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                        title="Modifier"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

@@ -199,6 +199,143 @@ function verifierEcran(req: Req, res: Response, next: express.NextFunction) {
   next();
 }
 
+// --- Périmètre de travail ---------------------------------------------------
+
+interface Localisation {
+  latitude: number;
+  longitude: number;
+  rayonMetres: number;
+  toleranceMetres: number;
+  actif: boolean;
+}
+
+/**
+ * Réglage de périmètre, relu à chaque contrôle.
+ *
+ * Volontairement non mis en cache : désactiver le périmètre doit prendre effet
+ * immédiatement. Le jour où la caméra du GPS déraille et bloque l'équipe, on
+ * ne veut pas attendre le redémarrage d'une instance pour rouvrir la caisse.
+ */
+async function lireLocalisation(): Promise<Localisation | null> {
+  const { data } = await supabase
+    .from("settings").select("value").eq("key", "localisation").maybeSingle();
+  const v = data?.value as Partial<Localisation> | undefined;
+  if (!v || !v.actif) return null;
+  if (typeof v.latitude !== "number" || typeof v.longitude !== "number") return null;
+  return {
+    latitude: v.latitude,
+    longitude: v.longitude,
+    rayonMetres: Number(v.rayonMetres) || 30,
+    toleranceMetres: Number(v.toleranceMetres) || 60,
+    actif: true,
+  };
+}
+
+/** Distance à vol d'oiseau entre deux points, en mètres (formule de haversine). */
+export function distanceMetres(
+  aLat: number, aLng: number, bLat: number, bLng: number
+): number {
+  const R = 6_371_000;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(bLat - aLat);
+  const dLng = rad(bLng - aLng);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(aLat)) * Math.cos(rad(bLat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/** Position transmise par le navigateur, en en-tête `X-Position`. */
+function positionDe(req: Req): { lat: number; lng: number; precision: number } | null {
+  const brut = req.header("X-Position");
+  if (!brut) return null;
+  const [lat, lng, precision] = String(brut).split(",").map(Number);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return { lat, lng, precision: Number.isFinite(precision) ? Math.abs(precision) : 0 };
+}
+
+/**
+ * La position est-elle dans le périmètre ?
+ *
+ * L'imprécision annoncée par l'appareil est créditée, mais plafonnée. Sans ce
+ * crédit, un agent debout dans la boutique serait refusé dès que le téléphone
+ * annonce quarante mètres d'incertitude — ce qui est courant en intérieur. Sans
+ * le plafond, une position déduite de l'adresse IP, annoncée à cinq kilomètres
+ * près, ouvrirait le périmètre au pays entier.
+ */
+function dansLePerimetre(
+  position: { lat: number; lng: number; precision: number },
+  lieu: Localisation
+): { ok: boolean; distance: number } {
+  const distance = distanceMetres(position.lat, position.lng, lieu.latitude, lieu.longitude);
+  const credit = Math.min(position.precision, lieu.toleranceMetres);
+  return { ok: distance - credit <= lieu.rayonMetres, distance };
+}
+
+/**
+ * Refuse les écritures faites hors de l'établissement.
+ *
+ * Ne s'applique qu'au personnel de terrain, et qu'aux écritures : consulter un
+ * chiffre depuis chez soi n'engage rien, enregistrer une vente qui n'a pas eu
+ * lieu au comptoir, si. L'encadrement n'est jamais bloqué — corriger une
+ * écriture le soir fait partie de son travail.
+ */
+/**
+ * Contrôle de périmètre utilisable hors chaîne de middlewares.
+ *
+ * Les routes publiques — connexion par le visage, pointage — s'exécutent avant
+ * qu'un profil soit connu : elles ne peuvent pas passer par le middleware, mais
+ * ce sont précisément celles qui attestent une présence. Renvoie la réponse
+ * d'erreur si elle a été envoyée, `null` sinon.
+ */
+async function refuserSiHorsPerimetre(req: Req, res: Response): Promise<Response | null> {
+  const lieu = await lireLocalisation();
+  if (!lieu) return null;
+
+  const position = positionDe(req);
+  if (!position) {
+    return res.status(428).json({
+      code: "position_requise",
+      error: "Autorisez la localisation : le pointage se fait depuis l'établissement.",
+    });
+  }
+
+  const { ok, distance } = dansLePerimetre(position, lieu);
+  if (!ok) {
+    return res.status(403).json({
+      code: "hors_perimetre",
+      error: `Vous êtes à environ ${Math.round(distance)} m de l'établissement. `
+        + `Le pointage se fait sur place.`,
+    });
+  }
+  return null;
+}
+
+async function verifierPresence(req: Req, res: Response, next: express.NextFunction) {
+  if (req.method === "GET" || !personnelDeTerrain(req.profil!)) return next();
+
+  const lieu = await lireLocalisation();
+  if (!lieu) return next();
+
+  const position = positionDe(req);
+  if (!position) {
+    return res.status(428).json({
+      code: "position_requise",
+      error: "Autorisez la localisation : les opérations ne peuvent être enregistrées que depuis l'établissement.",
+    });
+  }
+
+  const { ok, distance } = dansLePerimetre(position, lieu);
+  if (!ok) {
+    return res.status(403).json({
+      code: "hors_perimetre",
+      error: `Vous êtes à environ ${Math.round(distance)} m de l'établissement. `
+        + `Les opérations ne peuvent être enregistrées que sur place.`,
+    });
+  }
+  next();
+}
+
 // --- Portée par établissement ----------------------------------------------
 
 /** Le profil peut-il voir plusieurs établissements et le cumul ? */
@@ -637,6 +774,12 @@ export function createApiApp() {
       return res.status(400).json({ error: "Image inexploitable. Réessayez." });
     }
 
+    // Le pointage atteste une présence : le faire depuis chez soi le viderait
+    // de son sens. Le contrôle a lieu avant la reconnaissance, pour ne pas
+    // comparer des visages à quelqu'un qui n'est de toute façon pas sur place.
+    const barrage = await refuserSiHorsPerimetre(req, res);
+    if (barrage) return barrage;
+
     let q = supabase
       .from("profiles")
       .select("id, full_name, email, visage_empreinte, establishment_id")
@@ -692,6 +835,11 @@ export function createApiApp() {
 
     const blocage = verifierTentatives(String(profileId));
     if (blocage) return res.status(429).json({ error: blocage });
+
+    // Même exigence que pour le visage : le personnel de terrain travaille sur
+    // place, et une session ouverte est ce qui permet ensuite d'enregistrer.
+    const barrage = await refuserSiHorsPerimetre(req, res);
+    if (barrage) return barrage;
 
     const { data: profil } = await supabase
       .from("profiles")
@@ -767,7 +915,7 @@ export function createApiApp() {
   app.use("/api/auth", publique);
 
   const api = express.Router();
-  api.use(requireAuth, loadProfile, verifierEcran);
+  api.use(requireAuth, loadProfile, verifierEcran, verifierPresence);
 
   // -------------------------------------------------------------------------
   // Profil courant
